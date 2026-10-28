@@ -1560,6 +1560,7 @@
                 statusFailed: '失败',
                 statusStopping: '停止中...',
                 msgConcurrentSuccess: '并发成功',
+                msgValidPasses: '遍有效',
                 msgTestStopped: '测试已手动停止。',
                 msgTestCompleteNoData: '测试完成，但没有收集到成功的数据。',
                 msgAllRequestsFailed: '所有并发请求失败',
@@ -1852,6 +1853,7 @@
                 statusFailed: 'Failed',
                 statusStopping: 'Stopping...',
                 msgConcurrentSuccess: 'concurrent success',
+                msgValidPasses: 'passes valid',
                 msgTestStopped: 'Test manually stopped.',
                 msgTestCompleteNoData: 'Test completed, but no successful data collected.',
                 msgAllRequestsFailed: 'All concurrent requests failed',
@@ -4937,6 +4939,8 @@ try {
                     let prefillSpread = 1, decodeSpread = 1, unstableLabel = null;
                     let dispPrefillMs = prefillDurationMs, dispDecodeMs = decodeDurationMs;
                     let queuedPasses = 0;
+                    let validPassCount = batchAggregates.length;
+                    const totalPassCount = batchAggregates.length;
                     if (batchAggregates.length >= 2) {
                         const med = (arr) => { const s = [...arr].sort((a, b) => a - b); const n = s.length; return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2; };
                         // 每遍估算排队时间 = 客户端首字时间 - 服务端 prefill - 网络延迟；剩下的就是排在别人后面等的时间
@@ -4958,6 +4962,7 @@ try {
                         const _minQ = Math.min(...passes.map(x => x.q));
                         queuedPasses = passes.filter(x => (x.q - _minQ) > 200).length;
                         const usable = (passes.length - queuedPasses >= 1) ? passes.filter(x => (x.q - _minQ) <= 200) : passes;
+                        validPassCount = usable.length;
                         const pp = usable.map(x => x.p).filter(v => v > 0);
                         const pd = usable.map(x => x.d).filter(v => v > 0);
                         const pms = usable.map(x => x.pm).filter(hasPositiveNumber);
@@ -5008,8 +5013,11 @@ try {
                         ...collectTokenWarnings(concurrencyResults),
                         ...(Array.isArray(aggregateMetrics.warnings) ? aggregateMetrics.warnings : [])
                     ];
+                    const passSuffix = totalPassCount > 1
+                        ? ` · ${validPassCount}/${totalPassCount} ${translations[currentLang].msgValidPasses}`
+                        : '';
                     const statusText = formatStatusWithTokenWarnings(
-                        `${successfulCount}/${concurrency} ${translations[currentLang].msgConcurrentSuccess}`,
+                        `${successfulCount}/${concurrency} ${translations[currentLang].msgConcurrentSuccess}${passSuffix}`,
                         tokenWarnings
                     );
                     const statusTextFinal = unstableLabel ? `${statusText} · ${unstableLabel}` : statusText;
@@ -5041,6 +5049,8 @@ try {
                         outputTimeMs: (batchAggregates.length >= 2 ? dispDecodeMs : decodeDurationMs).toFixed(2),
                         outputSpeed: totalOutputSpeed.toFixed(2),
                         status: statusTextFinal,
+                        validPasses: validPassCount,
+                        totalPasses: totalPassCount,
                         concurrency: concurrency,
                         successful: successfulCount,
                         avgTtftMs: avgTtftMs.toFixed(2),
