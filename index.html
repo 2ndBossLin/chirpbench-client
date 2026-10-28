@@ -2962,9 +2962,20 @@ mood.
             };
         }
 
+        function _calibrationRatio(calibration) {
+            // tokenizer 比率：同一段文本服务端数出来的 token 数 / 本地词数估算
+            if (!calibration) return 1;
+            const r = Number(calibration.tokenRatio);
+            if (!Number.isFinite(r) || r < 0.5 || r > 2) return 1;
+            return r;
+        }
+
         function applyPromptCalibration(estimatedPromptTokens, calibration) {
             const estimate = Math.max(Math.trunc(estimatedPromptTokens || 0), 1);
-            if (!calibration || !Number.isFinite(calibration.tokenOffset)) return estimate;
+            if (!calibration) return estimate;
+            const ratio = _calibrationRatio(calibration);
+            if (ratio !== 1) return Math.max(Math.round(estimate * ratio), 1);
+            if (!Number.isFinite(calibration.tokenOffset)) return estimate;
             return Math.max(Math.round(estimate + calibration.tokenOffset), 1);
         }
 
@@ -2980,7 +2991,11 @@ mood.
             if (resolvedLength <= SHORT_PROMPT_MAX_LENGTH) return resolvedLength;
 
             const systemTokens = estimateTokenCount(DEFAULT_SYSTEM_PROMPT);
-            const calibratedUserLength = Math.round(resolvedLength - systemTokens - calibration.tokenOffset);
+            const ratio = _calibrationRatio(calibration);
+            // 目标 token 数 ÷ tokenizer 比率 = 该发多少个词，保证服务端数出来正好是目标长度
+            const calibratedUserLength = ratio !== 1
+                ? Math.round((resolvedLength - systemTokens) / ratio)
+                : Math.round(resolvedLength - systemTokens - calibration.tokenOffset);
             return Math.max(BENCHMARK_SUFFIX_TOKEN_LENGTH, calibratedUserLength);
         }
 
@@ -3986,6 +4001,39 @@ mood.
                         actualPromptTokens = normalizeUsageTokenStats(data.usage).promptTokens;
                     } else if (data?.prompt_eval_count !== undefined) {
                         actualPromptTokens = toTokenNumber(data.prompt_eval_count);
+                    }
+                    // 有些服务（ninfer）不支持 stream:false 或非流式不返回 usage → 再用流式探一次拿 usage
+                    if (!hasPositiveNumber(actualPromptTokens) && apiType === 'openai') {
+                        try {
+                            const probeBody = Object.assign({}, requestBody, { stream: true, stream_options: { include_usage: true }, max_tokens: 16 });
+                            const pr = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(probeBody), signal: controller.signal });
+                            if (pr.ok && pr.body) {
+                                const reader = pr.body.getReader();
+                                const dec = new TextDecoder();
+                                let buf = '';
+                                while (true) {
+                                    const { value, done } = await reader.read();
+                                    if (done) break;
+                                    buf += dec.decode(value, { stream: true });
+                                    const lines = buf.split('\n');
+                                    buf = lines.pop();
+                                    for (const line of lines) {
+                                        const s = line.trim();
+                                        if (!s.startsWith('data:')) continue;
+                                        const js2 = s.slice(5).trim();
+                                        if (!js2 || js2 === '[DONE]') continue;
+                                        try {
+                                            const obj = JSON.parse(js2);
+                                            if (obj.usage && hasPositiveNumber(normalizeUsageTokenStats(obj.usage).promptTokens)) {
+                                                actualPromptTokens = normalizeUsageTokenStats(obj.usage).promptTokens;
+                                            }
+                                        } catch (_e) { /* ignore partial */ }
+                                    }
+                                }
+                            }
+                        } catch (probeErr) {
+                            console.warn('[Warmup] streaming probe failed:', probeErr && probeErr.message);
+                        }
                     }
                     calibration = buildPromptCalibration(warmupPrompt, actualPromptTokens);
                 } catch (parseError) {
