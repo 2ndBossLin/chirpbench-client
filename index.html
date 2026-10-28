@@ -4855,7 +4855,12 @@ const measurementPromises = [];
                 for (let i = 0; i < concurrency; i++) {
                     //  传入seed确保每个并发请求的prompt都不同，避免prefix cache命中；rep 让每轮重复用不同语料切片，防 KV-cache 预热虚高
                     const generationPromptLength = getCalibratedGenerationPromptLength(length, promptCalibration);
-                    const prompt = generatePrompt(generationPromptLength, 'openai', i + 1 + rep * 1000);
+                    let prompt = generatePrompt(generationPromptLength, 'openai', i + 1 + rep * 1000);
+                    // 语料是确定性的，各遍内容完全相同；带 prefix cache 的后端（vLLM/llama.cpp）第二、三遍会直接命中缓存，
+                    // prefill 变成几毫秒 → 速度虚高到几万。给非首遍加一个随机小前缀破缓存，主体语料不变。
+                    if (rep > 0) {
+                        prompt = '[session ' + Math.random().toString(36).slice(2, 10) + ']\n' + prompt;
+                    }
                     const promptTokenEstimate = applyPromptCalibration(estimatePromptTokensForRequest(prompt), promptCalibration);
                     if (i === 0) firstPrompt = prompt; // 保存第一个prompt
 
@@ -4989,7 +4994,16 @@ try {
                         // 客户端固定开销（冷启动、CUDA graph、采样起步）会体现成“排队”，用本组最快的一遍当基准扣掉
                         const _minQ = Math.min(...passes.map(x => x.q));
                         queuedPasses = passes.filter(x => (x.q - _minQ) > 200).length;
-                        const usable = (passes.length - queuedPasses >= 1) ? passes.filter(x => (x.q - _minQ) <= 200) : passes;
+                        let usable = (passes.length - queuedPasses >= 1) ? passes.filter(x => (x.q - _minQ) <= 200) : passes;
+                        // 缓存命中兜底：某遍 prefill 快过其它遍 2 倍以上，基本就是 prefix cache 命中，不是真算的
+                        if (usable.length >= 2) {
+                            const maxPm = Math.max(...usable.map(x => x.pm));
+                            const cached = usable.filter(x => x.pm > 0 && x.pm < maxPm * 0.4);
+                            if (cached.length && usable.length - cached.length >= 1) {
+                                usable = usable.filter(x => !(x.pm > 0 && x.pm < maxPm * 0.4));
+                                queuedPasses += cached.length;
+                            }
+                        }
                         validPassCount = usable.length;
                         const pp = usable.map(x => x.p).filter(v => v > 0);
                         const pd = usable.map(x => x.d).filter(v => v > 0);
