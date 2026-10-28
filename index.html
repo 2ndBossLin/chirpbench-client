@@ -3967,7 +3967,7 @@ mood.
 
         async function _probePromptTokens(apiUrl, headers, modelName, messages, signal) {
             try {
-                const body = { model: modelName, messages, max_tokens: 4, stream: true, stream_options: { include_usage: true } };
+                const body = { model: modelName, messages, max_tokens: 4, cache_prompt: false, stream: true, stream_options: { include_usage: true } };
                 const r = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(body), signal });
                 if (!r.ok || !r.body) return null;
                 const reader = r.body.getReader();
@@ -4669,7 +4669,7 @@ mood.
                     const body = { model: modelName, messages: [
                         { role: 'system', content: DEFAULT_SYSTEM_PROMPT },
                         { role: 'user', content: prompts[0] }
-                    ], max_tokens: outLen, temperature: 0, stream: true, stream_options: { include_usage: true } };
+                    ], max_tokens: outLen, temperature: 0, cache_prompt: false, stream: true, stream_options: { include_usage: true } };
                     const rs = await Promise.allSettled(prompts.map((pr, i) => {
                         const b = Object.assign({}, body);
                         b.messages = [{ role: 'system', content: DEFAULT_SYSTEM_PROMPT }, { role: 'user', content: pr }];
@@ -4830,7 +4830,9 @@ const measurementPromises = [];
                         "presence_penalty": presence_penalty,
                         "frequency_penalty": frequency_penalty,
                         "stream": true,
-                        "stream_options": { "include_usage": true }  // 请求usage信息
+                        "stream_options": { "include_usage": true },  // 请求usage信息
+                        // llama.cpp 默认会把相同前缀的 KV 缓存起来，重复遍数会直接命中缓存、prefill 变成几毫秒
+                        "cache_prompt": false
                     };
 
                     const fetchOptions = {
