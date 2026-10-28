@@ -8096,10 +8096,13 @@ ${_uploadBtn}
             }
             // 填充备注字段
             document.getElementById('notes').value = record.notes || '';
+            setTimeout(function () { try { renderConcurrencyResults(); } catch (e) { console.warn('conc render', e); } }, 0);
             document.getElementById('runCommand').value = record.config?.runCommand || '';
 
             // 加载历史记录的结果数据
             testResultsData = [...record.results];
+            // 恢复这条记录的并发成绩（有则显示标签页，没有就保持单表）
+            window._concRuns = Array.isArray(record.concRuns) ? JSON.parse(JSON.stringify(record.concRuns)) : [];
 
             // 清空并重新创建结果表格
             const resultsDiv = document.getElementById('results');
