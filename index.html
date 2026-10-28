@@ -4736,6 +4736,17 @@ mood.
                 promptCalibration = await sendWarmupRequest(apiUrl, 'openai', modelName, timeout);
                 await collectNetworkLatencySample(latencySamples, apiUrl, 'openai', modelName, timeout);
                 await collectNetworkLatencySample(latencySamples, apiUrl, 'openai', modelName, timeout);
+                // 弃用预热：第一遍常因冷启动（CUDA graph 抓取 / KV 分配）慢 100-300ms，别让它进正式计时
+                try {
+                    const _warmLen = Math.min(...testLengths.filter(x => x > 0));
+                    if (Number.isFinite(_warmLen)) {
+                        const _warmPrompt = generatePrompt(getCalibratedGenerationPromptLength(_warmLen, promptCalibration), 'openai', 999);
+                        const _warmBody = { model: modelName, messages: [{ role: 'system', content: DEFAULT_SYSTEM_PROMPT }, { role: 'user', content: _warmPrompt }], max_tokens: 8, temperature: 0, cache_prompt: false, stream: true };
+                        const _wr = await fetch(apiUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${api_key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(_warmBody) });
+                        if (_wr.body) { const _rd = _wr.body.getReader(); while (!(await _rd.read()).done) { /* 丢弃 */ } }
+                        console.log(`[Warmup] 弃用预热完成 @ ${_warmLen}`);
+                    }
+                } catch (_we) { console.warn('[Warmup] discard warmup failed:', _we && _we.message); }
             }
 
             const repeatCount = Math.max(1, parseInt((document.getElementById('repeatCount') || {}).value || '1', 10) || 1);
@@ -4943,8 +4954,10 @@ try {
                                 q: queue
                             };
                         });
-                        queuedPasses = passes.filter(x => x.q > 200).length;
-                        const usable = (passes.length - queuedPasses >= 1) ? passes.filter(x => x.q <= 200) : passes;
+                        // 客户端固定开销（冷启动、CUDA graph、采样起步）会体现成“排队”，用本组最快的一遍当基准扣掉
+                        const _minQ = Math.min(...passes.map(x => x.q));
+                        queuedPasses = passes.filter(x => (x.q - _minQ) > 200).length;
+                        const usable = (passes.length - queuedPasses >= 1) ? passes.filter(x => (x.q - _minQ) <= 200) : passes;
                         const pp = usable.map(x => x.p).filter(v => v > 0);
                         const pd = usable.map(x => x.d).filter(v => v > 0);
                         const pms = usable.map(x => x.pm).filter(hasPositiveNumber);
@@ -4958,6 +4971,7 @@ try {
                         }
                         if (queuedPasses > 0) {
                             unstableLabel = (unstableLabel ? `${unstableLabel} · ` : '') + `排除 ${queuedPasses} 遍排队`;
+                            if (usable.length < 2) unstableLabel += ' · 仅 1 遍有效';
                         }
                     }
                     const minStartTime = Math.min(...concurrencyResults.map(r => r.startTimestamp));
