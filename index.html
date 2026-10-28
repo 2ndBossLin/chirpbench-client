@@ -8205,7 +8205,7 @@ ${_uploadBtn}
         // Cloud Share + Username System (direct Supabase REST API)
         // ============================================================
         (function () {
-            const SUPABASE_URL = (location.protocol.startsWith('http') && !/^(127\.|localhost)/.test(location.hostname)) ? '' : 'http://156.239.47.96:18001';
+            const SUPABASE_URL = (location.protocol.startsWith('http') && !/^(127\.|localhost)/.test(location.hostname)) ? '' : 'https://bench.chirpdojo.com';
             const SUPABASE_KEY = 'local';
             const SB_HEADERS = { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=representation' };
             const USER_CODE_KEY = 'llm_speedtest_user_code';
