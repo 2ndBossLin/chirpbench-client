@@ -2949,17 +2949,39 @@ mood.
             return estimateTokenCount(DEFAULT_SYSTEM_PROMPT) + estimateTokenCount(promptText);
         }
 
-        function buildPromptCalibration(promptText, actualPromptTokens) {
+        function buildPromptCalibration(promptText, actualPromptTokens, baselinePromptTokens) {
             if (!hasPositiveNumber(actualPromptTokens)) return null;
             const estimatedPromptTokens = estimatePromptTokensForRequest(promptText);
+            const trueWordCount = Math.max(String(promptText || '').trim().split(/\s+/).filter(Boolean).length, 1);
             const tokenOffset = Math.trunc(actualPromptTokens) - estimatedPromptTokens;
+            // 比率必须扣掉系统提示那部分，否则小探针里系统提示占比高，比率被抬高（长文本会被压低）
+            let tokenRatio = Math.trunc(actualPromptTokens) / trueWordCount;
+            const base = Number(baselinePromptTokens);
+            if (Number.isFinite(base) && base > 0 && Math.trunc(actualPromptTokens) > base + 20) {
+                tokenRatio = (Math.trunc(actualPromptTokens) - base) / trueWordCount;
+            }
             return {
-                source: 'warmup_usage',
+                source: baselinePromptTokens ? 'warmup_usage_baseline' : 'warmup_usage',
                 estimatedPromptTokens,
                 actualPromptTokens: Math.trunc(actualPromptTokens),
+                baselinePromptTokens: Number.isFinite(base) ? Math.trunc(base) : null,
+                systemPromptTokens: Number.isFinite(base) && base > 0 ? Math.trunc(base) : null,
                 tokenOffset,
-                tokenRatio: Math.trunc(actualPromptTokens) / Math.max(estimatedPromptTokens, 1)
+                tokenRatio,
+                tokenRatioLarge: null,
+                probeWordCount: trueWordCount
             };
+        }
+            
+        // 长文本的词/词元比会略高于短文本（同一语料实测 512 词 ≈1.15、8192 词 ≈1.18），按目标长度插值
+        function _ratioForTarget(calibration, targetTokens) {
+            const rSmall = _calibrationRatio(calibration);
+            const rLargeRaw = Number(calibration && calibration.tokenRatioLarge);
+            const rLarge = (Number.isFinite(rLargeRaw) && rLargeRaw >= 0.5 && rLargeRaw <= 2) ? rLargeRaw : rSmall;
+            if (targetTokens <= 512) return rSmall;
+            if (targetTokens >= 8192) return rLarge;
+            const k = Math.log(targetTokens / 512) / Math.log(8192 / 512);
+            return rSmall + (rLarge - rSmall) * k;
         }
 
         function _calibrationRatio(calibration) {
@@ -2990,12 +3012,12 @@ mood.
             if (!calibration || !Number.isFinite(calibration.tokenOffset)) return resolvedLength;
             if (resolvedLength <= SHORT_PROMPT_MAX_LENGTH) return resolvedLength;
 
-            const systemTokens = estimateTokenCount(DEFAULT_SYSTEM_PROMPT);
-            const ratio = _calibrationRatio(calibration);
-            // 目标 token 数 ÷ tokenizer 比率 = 该发多少个词，保证服务端数出来正好是目标长度
-            const calibratedUserLength = ratio !== 1
-                ? Math.round((resolvedLength - systemTokens) / ratio)
-                : Math.round(resolvedLength - systemTokens - calibration.tokenOffset);
+            const systemTokens = (calibration && hasPositiveNumber(calibration.systemPromptTokens))
+                ? Math.trunc(calibration.systemPromptTokens)
+                : estimateTokenCount(DEFAULT_SYSTEM_PROMPT);
+            const ratio = _ratioForTarget(calibration, resolvedLength);
+            // 目标 token 数 ÷ 该长度对应的 tokenizer 比率 = 该发多少个词，保证服务端数出来正好是目标长度
+            const calibratedUserLength = Math.round((resolvedLength - systemTokens) / ratio);
             return Math.max(BENCHMARK_SUFFIX_TOKEN_LENGTH, calibratedUserLength);
         }
 
@@ -3943,8 +3965,45 @@ mood.
             return generatePrompt(96, 'openai', 0);
         }
 
+        async function _probePromptTokens(apiUrl, headers, modelName, messages, signal) {
+            try {
+                const body = { model: modelName, messages, max_tokens: 4, stream: true, stream_options: { include_usage: true } };
+                const r = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(body), signal });
+                if (!r.ok || !r.body) return null;
+                const reader = r.body.getReader();
+                const dec = new TextDecoder();
+                let buf = '', found = null;
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buf += dec.decode(value, { stream: true });
+                    const lines = buf.split('\n');
+                    buf = lines.pop();
+                    for (const line of lines) {
+                        const s = line.trim();
+                        if (!s.startsWith('data:')) continue;
+                        const js = s.slice(5).trim();
+                        if (!js || js === '[DONE]') continue;
+                        try {
+                            const obj = JSON.parse(js);
+                            if (obj.usage && hasPositiveNumber(normalizeUsageTokenStats(obj.usage).promptTokens)) {
+                                found = normalizeUsageTokenStats(obj.usage).promptTokens;
+                            }
+                        } catch (_e) { /* partial */ }
+                    }
+                }
+                return found;
+            } catch (e) {
+                console.warn('[Warmup] baseline probe failed:', e && e.message);
+                return null;
+            }
+        }
+
         async function sendWarmupRequest(apiUrl, apiType, modelName, timeout) {
-            const warmupPrompt = createWarmupPrompt();
+            // 必须用与正式测试同源的语料做探针：探针文本不同，词/词元比率会差出一大截
+            const warmupPrompt = (typeof generatePrompt === 'function')
+                ? generatePrompt(512, apiType, 7)
+                : createWarmupPrompt();
             const warmupTimeout = Math.max(Number(timeout) || 0, 15000);
             const headers = { 'Content-Type': 'application/json' };
             let requestBody;
@@ -4035,7 +4094,26 @@ mood.
                             console.warn('[Warmup] streaming probe failed:', probeErr && probeErr.message);
                         }
                     }
-                    calibration = buildPromptCalibration(warmupPrompt, actualPromptTokens);
+                    let baselinePromptTokens = null;
+                    if (apiType === 'openai' && hasPositiveNumber(actualPromptTokens)) {
+                        baselinePromptTokens = await _probePromptTokens(apiUrl, headers, modelName, [
+                            { role: 'system', content: DEFAULT_SYSTEM_PROMPT },
+                            { role: 'user', content: 'hi' }
+                        ], controller.signal);
+                    }
+                    calibration = buildPromptCalibration(warmupPrompt, actualPromptTokens, baselinePromptTokens);
+                    if (calibration && apiType === 'openai') {
+                        const longProbe = generatePrompt(8192, apiType, 11);
+                        const longTokens = await _probePromptTokens(apiUrl, headers, modelName, [
+                            { role: 'system', content: DEFAULT_SYSTEM_PROMPT },
+                            { role: 'user', content: longProbe }
+                        ], controller.signal);
+                        if (hasPositiveNumber(longTokens) && hasPositiveNumber(baselinePromptTokens)) {
+                            const longWords = 8192;
+                            const rLong = (longTokens - baselinePromptTokens) / longWords;
+                            if (rLong > 0.5 && rLong < 2) calibration.tokenRatioLarge = rLong;
+                        }
+                    }
                 } catch (parseError) {
                     console.warn('[Warmup] Failed to parse warmup usage for prompt calibration:', parseError);
                     calibration = null;
