@@ -7796,10 +7796,17 @@ try {
                 const _pass = _modeSaved === 'assistant'
                     ? (_maxOk >= 131072)  // 助理级只要求单并发 ≥128k，没有并发档
                     : (_declaredPass !== null ? _declaredPass : (_tierNeed > 0 && _maxOk >= _tierNeed));
+                // 通过评级的记录直接用奖牌 + 分档色，一眼能看出等级
+                const _medal = _modeSaved === 'assistant' ? '🥉' : (_modeSaved === 'dev' ? '🥈' : (_modeSaved === 'studio' ? '🥇' : ''));
+                const _tierStyle = _modeSaved === 'studio'
+                    ? 'background:#221a33;color:#a78bfa;border:1px solid #4b3a78;'
+                    : (_modeSaved === 'assistant'
+                        ? 'background:#2a2413;color:#d6b45a;border:1px solid #6b5a1f;'
+                        : 'background:#1b2029;color:#c9d1d9;border:1px solid #3a4152;');
                 const _tierBadge = _abortedSaved
                     ? '<span style="background:#2a2413;color:#d6b45a;border:1px solid #6b5a1f;border-radius:999px;padding:1px 8px;font-size:11px;">' + _modeName + ' · 已中止 · 不可上传</span>'
                     : _pass
-                    ? '<span style="background:#0f2a20;color:#7ee2b8;border:1px solid #1f6f51;border-radius:999px;padding:1px 8px;font-size:11px;">' + _modeName + ' · ' + _rcSaved + ' 遍</span>'
+                    ? '<span style="' + _tierStyle + 'border-radius:999px;padding:1px 9px;font-size:11px;">' + (_medal ? _medal + ' ' : '') + _modeName + ' · ' + _rcSaved + ' 遍</span>'
                     : '<span style="background:#2a2413;color:#d6b45a;border:1px solid #6b5a1f;border-radius:999px;padding:1px 8px;font-size:11px;">' + _modeName + ' · 未达标 · 不可上传</span>';
                 const _badge = _legacy
                     ? '<span style="background:#2a2413;color:#d6b45a;border:1px solid #6b5a1f;border-radius:999px;padding:1px 8px;font-size:11px;">旧版本记录 · 不可上传</span>'
