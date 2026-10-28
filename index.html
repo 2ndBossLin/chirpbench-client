@@ -6785,7 +6785,12 @@ try {
             // ChirpBench tier: run concurrency probes (capability only, speeds NOT recorded)
             try {
                 const okRows = testResultsData.filter(r => r.prefillSpeed !== 'N/A' && r.outputSpeed !== 'N/A');
-                if (window._retestParent && window._retestTier && document.getElementById('retestTierProbe')?.checked && currentApiType === 'openai') {
+                const _abortedNow = !isTestingRunning; // 手动中止：长度梯子没跑完，不能判定评级
+                if (_abortedNow) {
+                    window._tierInfo = null;
+                    window._concRuns = [];
+                    console.warn('[tier] 测试被手动中止，跳过评级判定与并发档');
+                } else if (window._retestParent && window._retestTier && document.getElementById('retestTierProbe')?.checked && currentApiType === 'openai') {
                     const n = window._retestTier === 'studio' ? 8 : 3;
                     const needCtx = 131072; // 3/8 并发都只验到 128k
                     let pass = false;
@@ -6877,7 +6882,8 @@ try {
                         frequencyPenalty: frequency_penalty,
                         timeout: timeout,
                         notes: notes,
-                        runCommand: runCommand
+                        runCommand: runCommand,
+                        aborted: !!wasManuallyStopped
                     };
                     const saved = saveTestToHistory(currentConfig, testResultsData, statsData);
                     if (saved) {
@@ -7681,10 +7687,13 @@ try {
                     return Number.isFinite(sp) ? (parseFloat(r.promptLength) || 0) : 0;
                 }));
                 const _declaredPass = (record.config && typeof record.config.tierPass === 'boolean') ? record.config.tierPass : null;
+                const _abortedSaved = !!(record.config && record.config.aborted);
                 const _pass = _modeSaved === 'assistant'
                     ? (_maxOk >= 131072)  // 助理级只要求单并发 ≥128k，没有并发档
                     : (_declaredPass !== null ? _declaredPass : (_tierNeed > 0 && _maxOk >= _tierNeed));
-                const _tierBadge = _pass
+                const _tierBadge = _abortedSaved
+                    ? '<span style="background:#2a2413;color:#d6b45a;border:1px solid #6b5a1f;border-radius:999px;padding:1px 8px;font-size:11px;">' + _modeName + ' · 已中止 · 不可上传</span>'
+                    : _pass
                     ? '<span style="background:#0f2a20;color:#7ee2b8;border:1px solid #1f6f51;border-radius:999px;padding:1px 8px;font-size:11px;">' + _modeName + ' · ' + _rcSaved + ' 遍</span>'
                     : '<span style="background:#2a2413;color:#d6b45a;border:1px solid #6b5a1f;border-radius:999px;padding:1px 8px;font-size:11px;">' + _modeName + ' · 未达标 · 不可上传</span>';
                 const _badge = _legacy
@@ -7692,7 +7701,7 @@ try {
                     : _isTier
                     ? _tierBadge
                     : '<span style="background:#20242c;color:#8b949e;border:1px solid #2a3140;border-radius:999px;padding:1px 8px;font-size:11px;">本机测试 · 不可上传</span>';
-                const _uploadBtn = (_isTier && _pass)
+                const _uploadBtn = (_isTier && _pass && !_abortedSaved)
                     ? '<button class="history-record-btn history-record-btn-upload" data-id="' + record.id + '">' + (t.historyBtnUpload || '上传成绩') + '</button>'
                     : '';
 
@@ -7743,6 +7752,10 @@ ${_uploadBtn}
                     const id = Number(btn.dataset.id);
                     const rec = loadHistoryFromStorage().find(r => r.id === id);
                     if (!rec || !rec.results || !rec.results.length) { alert('这条记录没有可上传的数据'); return; }
+                    if (rec.config && rec.config.aborted) {
+                        alert('这条记录是手动中止的测试，长度梯子没跑完，不能上传。');
+                        return;
+                    }
                     if (rec.schema !== 2) { alert('这条记录来自旧版本客户端，缺少评级判定和并发数据，不能上传。请用当前版本重新跑一次评级测试。'); return; }
                     window._historyUploadRecord = rec;
                     // 还原这条历史记录的多并发明细 / 评级判定，上传时一并带上
