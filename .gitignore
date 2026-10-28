@@ -1,0 +1,8 @@
+# 构建产物与中间文件
+client/out/
+client/web/
+*.exe
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
