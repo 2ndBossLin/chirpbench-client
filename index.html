@@ -4030,7 +4030,7 @@ mood.
         async function sendWarmupRequest(apiUrl, apiType, modelName, timeout) {
             // 必须用与正式测试同源的语料做探针：探针文本不同，词/词元比率会差出一大截
             const warmupPrompt = (typeof generatePrompt === 'function')
-                ? generatePrompt(512, apiType, 7)
+                ? '[probe ' + Math.random().toString(36).slice(2, 10) + ']\n' + generatePrompt(512, apiType, 7)
                 : createWarmupPrompt();
             const warmupTimeout = Math.max(Number(timeout) || 0, 15000);
             const headers = { 'Content-Type': 'application/json' };
@@ -4131,7 +4131,7 @@ mood.
                     }
                     calibration = buildPromptCalibration(warmupPrompt, actualPromptTokens, baselinePromptTokens);
                     if (calibration && apiType === 'openai') {
-                        const longProbe = generatePrompt(8192, apiType, 11);
+                        const longProbe = '[probe ' + Math.random().toString(36).slice(2, 10) + ']\n' + generatePrompt(8192, apiType, 11);
                         const longTokens = await _probePromptTokens(apiUrl, headers, modelName, [
                             { role: 'system', content: DEFAULT_SYSTEM_PROMPT },
                             { role: 'user', content: longProbe }
@@ -4858,9 +4858,9 @@ const measurementPromises = [];
                     let prompt = generatePrompt(generationPromptLength, 'openai', i + 1 + rep * 1000);
                     // 语料是确定性的，各遍内容完全相同；带 prefix cache 的后端（vLLM/llama.cpp）第二、三遍会直接命中缓存，
                     // prefill 变成几毫秒 → 速度虚高到几万。给非首遍加一个随机小前缀破缓存，主体语料不变。
-                    if (rep > 0) {
-                        prompt = '[session ' + Math.random().toString(36).slice(2, 10) + ']\n' + prompt;
-                    }
+                    // 每一遍（含第一遍）都要破缓存：校准探针、弃用预热都用了同一份确定性语料，
+                    // 首遍同样可能整段命中 prefix cache
+                    prompt = '[session ' + Math.random().toString(36).slice(2, 10) + ']\n' + prompt;
                     const promptTokenEstimate = applyPromptCalibration(estimatePromptTokensForRequest(prompt), promptCalibration);
                     if (i === 0) firstPrompt = prompt; // 保存第一个prompt
 
