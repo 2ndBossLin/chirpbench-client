@@ -4771,7 +4771,7 @@ mood.
                 wrap.style.display = 'none';
                 const note = document.createElement('p');
                 note.className = 'notes';
-                note.textContent = cr.concurrency + ' 并发 · 各长度跑 1 遍' + (cr.incomplete ? ' · 未跑完' : '');
+                note.textContent = cr.concurrency + ' 并发 · 各长度跑 1 遍 · 聚合吞吐 = 各请求 token 之和 ÷ 最慢请求耗时（不能与单并发表直接比大小）' + (cr.incomplete ? ' · 未跑完' : '');
                 wrap.appendChild(note);
 
                 const table = document.createElement('table');
