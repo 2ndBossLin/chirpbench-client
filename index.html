@@ -7061,33 +7061,45 @@ try {
                 resultsDiv.querySelector('tbody').appendChild(errorRow);
             }
 
-            // 稳态解码：只在单并发下跑，结果作为同一张表的最后一行（不另开标签页）
+            // 长跑测试：表格下面一句人话结论（不用懂 prefill/decode 也能读）
             try {
                 const okSteady = testResultsData.filter(r => r.prefillSpeed !== 'N/A' && r.outputSpeed !== 'N/A');
                 if (isTestingRunning && concurrency === 1 && okSteady.length > 0 && currentApiType === 'openai') {
                     const promptLen = Math.max(...okSteady.map(r => parseFloat(r.promptLength) || 0));
                     const steadyDur = Math.min(Math.max(parseInt(window._steadySec || localStorage.getItem('chirpbenchSteadySec') || '10', 10) || 10, 3), 60);
                     const steadyOut = 256;
-                    const tbody = resultsDiv.querySelector('tbody');
-                    const srow = document.createElement('tr');
-                    srow.innerHTML = '<td>' + promptLen + '<span style="margin-left:6px;padding:1px 6px;border:1px solid #33605c;border-radius:8px;font-size:11px;color:#7fd1c8;">稳态</span></td>' +
-                        '<td>—</td><td>—</td><td>' + steadyOut + ' × …</td><td>测…</td><td>测…</td><td>' + steadyDur + ' s 窗口内连续请求</td><td>—</td>';
-                    if (tbody) tbody.appendChild(srow);
-                    startTestBtn.textContent = (translations[currentLang].msgTesting || '测试中') + ' 稳态解码';
+                    const baseRow = okSteady.find(r => (parseFloat(r.promptLength) || 0) === promptLen);
+                    const baseSpeed = baseRow ? parseFloat(baseRow.outputSpeed) : 0;
+
+                    const line = document.createElement('div');
+                    line.style.cssText = 'margin:12px 2px 0;font-size:13px;color:#8b949e;line-height:1.9;';
+                    line.innerHTML = '长跑测试：连续生成 ' + steadyDur + ' 秒，测量中…';
+                    resultsDiv.appendChild(line);
+                    startTestBtn.textContent = (translations[currentLang].msgTesting || '测试中') + ' 长跑';
+
                     const st = await runSteadyDecode({
                         apiUrl, modelName: currentModelName, promptLen,
-                        durationSec: steadyDur, maxTokens: steadyOut, timeout, apiKey: (document.getElementById('apiKey')?.value?.trim() || '')
+                        durationSec: steadyDur, maxTokens: steadyOut, timeout,
+                        apiKey: (document.getElementById('apiKey')?.value?.trim() || '')
                     });
                     window._steady = st;
-                    if (tbody) {
-                        srow.innerHTML = '<td>' + promptLen + '<span style="margin-left:6px;padding:1px 6px;border:1px solid #33605c;border-radius:8px;font-size:11px;color:#7fd1c8;">稳态</span></td>' +
-                            '<td>—</td><td>—</td><td>' + steadyOut + '</td>' +
-                            '<td>' + st.windowSec.toFixed(1) + ' s</td>' +
-                            '<td>' + st.tokS.toFixed(2) + '</td>' +
-                            '<td>' + st.requests + ' 请求 / ' + st.tokens.toLocaleString() + ' token' + (st.failed ? ' / 失败 ' + st.failed : '') + '</td><td>—</td>';
-                    }
+
+                    const pct = baseSpeed > 0 ? (st.tokS - baseSpeed) / baseSpeed * 100 : null;
+                    const dot = (pct !== null && pct <= -3) ? '⚠' : '✓';
+                    let verdict;
+                    if (pct === null) verdict = '这次没拿到单次成绩做参照，只能看绝对值';
+                    else if (pct <= -3) verdict = '比单次慢 ' + Math.abs(pct).toFixed(1) + '%，说明长时间满载会降速';
+                    else if (pct >= 3) verdict = '比单次还快 ' + pct.toFixed(1) + '%，长时间运行没掉速';
+                    else verdict = '和单次基本持平，能长时间保持这个速度';
+
+                    line.innerHTML = dot + ' 长跑测试：连续生成 ' + st.windowSec.toFixed(0) + ' 秒，' +
+                        '<b style="color:#e6edf3;">' + st.tokS.toFixed(1) + ' token/秒</b> —— ' +
+                        '<span style="color:' + ((pct !== null && pct <= -3) ? '#d6b45a' : '#c9d1d9') + ';">' + verdict + '</span>' +
+                        '<br><span style="font-size:12px;">（' + st.requests + ' 次请求 / ' + st.tokens.toLocaleString() + ' token' +
+                        (st.failed ? ' / 失败 ' + st.failed : '') +
+                        (st.ttftMs ? ' / 首字 ' + Math.round(st.ttftMs) + ' ms' : '') + '）</span>';
                 }
-            } catch (e) { console.error('[steady] 稳态解码失败', e); }
+            } catch (e) { console.error('[steady] 长跑测试失败', e); }
 
             // ChirpBench tier: run concurrency probes (capability only, speeds NOT recorded)
             try {
@@ -8204,9 +8216,9 @@ ${_uploadBtn}
                     const _s = record.steady;
                     const _sb = document.createElement('div');
                     _sb.style.cssText = 'background:#161b26;border:1px solid #2a3140;border-radius:6px;padding:15px;margin-bottom:20px;color:#e6edf3;';
-                    _sb.innerHTML = '<h4 style="color:#61afef;margin:0 0 8px;">稳态解码（' + Number(_s.windowSec).toFixed(1) + ' 秒窗口）</h4>' +
+                    _sb.innerHTML = '<h4 style="color:#61afef;margin:0 0 8px;">长跑测试（连续生成 ' + Number(_s.windowSec).toFixed(1) + ' 秒）</h4>' +
                         '<div style="font-size:13px;color:#c9d1d9;line-height:1.9;">' +
-                        '解码速度 <b style="color:#e6edf3;">' + Number(_s.tokS).toFixed(2) + ' tok/s</b>（首字之后的纯解码时间）<br>' +
+                        '生成速度 <b style="color:#e6edf3;">' + Number(_s.tokS).toFixed(1) + ' token/秒</b>（不含读提示词的时间）<br>' +
                         '提示词长度 ' + _s.promptLen + ' · 每请求输出上限 ' + _s.maxTokens + ' · 完成 ' + _s.requests + ' 个请求 · 共 ' + Number(_s.tokens).toLocaleString() + ' token' +
                         (_s.failed ? ' · 失败 ' + _s.failed : '') +
                         (_s.ttftMs ? '<br>平均首字延迟 ' + Math.round(_s.ttftMs) + ' ms' : '') +
