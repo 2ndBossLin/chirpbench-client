@@ -6,6 +6,8 @@ The client is a **single static binary** with the web UI embedded. No runtime de
 
 This repository is public **for external review**: the measurement logic, the exact upload payload, and the command-execution boundary are all readable here and can be checked against the deployed client.
 
+A standalone methodology brief written for external review (what is measured, how cache contamination is neutralised, known limitations, open questions) is in [METHODOLOGY.md](METHODOLOGY.md).
+
 ---
 
 ## What it does
@@ -134,6 +136,8 @@ Why GPLv3: the code is public so anyone can audit the measurement logic, the upl
 单文件静态程序，网页界面编译在内嵌文件系统里，运行时不需要 Go 环境、任何动态库或配置文件，可以放在任意目录。
 
 本仓库公开是为了**接受外部审查**：测量逻辑、上传字段、命令执行边界都能直接对照线上客户端核对。
+
+面向外部审查的方法论说明（测什么、如何消除缓存污染、已知局限、待回答的问题）见 [METHODOLOGY.md](METHODOLOGY.md)。
 
 ## 它做什么
 
