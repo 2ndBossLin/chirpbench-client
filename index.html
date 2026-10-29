@@ -3196,6 +3196,86 @@ mood.
             return DECODE_TASK_SUFFIX.trim();
         }
 
+        // ================= 稳态解码（steady-state decode）=================
+        // 目的：不是测 512 token 的爆发速度，而是测"连续跑 N 秒，tok/s 会不会掉"。
+        // 计时只取首字之后的解码时间，prefill/排队不计入；每个请求都用随机 salt 重新生成提示词，避免前缀缓存复用。
+        async function steadyDecodeProbe(apiUrl, modelName, promptText, maxTokens, timeoutMs, apiKey) {
+            const body = {
+                model: modelName,
+                messages: [{ role: 'user', content: promptText }],
+                max_tokens: maxTokens,
+                temperature: 0,
+                top_p: 1,
+                stream: true,
+                stream_options: { include_usage: true },
+                cache_prompt: false
+            };
+            const headers = { 'Content-Type': 'application/json' };
+            if (apiKey) headers['Authorization'] = 'Bearer ' + apiKey;
+            const ctrl = new AbortController();
+            const to = setTimeout(() => ctrl.abort(), timeoutMs || 600000);
+            const t0 = performance.now();
+            let ttft = null, usage = null, chunkTokens = 0;
+            try {
+                const res = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const reader = res.body.getReader();
+                const dec = new TextDecoder();
+                let buf = '';
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buf += dec.decode(value, { stream: true });
+                    let nl;
+                    while ((nl = buf.indexOf('\n')) >= 0) {
+                        const line = buf.slice(0, nl).trim();
+                        buf = buf.slice(nl + 1);
+                        if (!line.startsWith('data:')) continue;
+                        const payload = line.slice(5).trim();
+                        if (!payload || payload === '[DONE]') continue;
+                        let o; try { o = JSON.parse(payload); } catch (e) { continue; }
+                        if (o.usage) usage = o.usage;
+                        const ch = (o.choices || [])[0];
+                        const d = ch && ch.delta;
+                        const txt = d && (d.content || d.reasoning_content);
+                        if (txt) { chunkTokens++; if (ttft === null) ttft = performance.now() - t0; }
+                    }
+                }
+            } finally { clearTimeout(to); }
+            const end = performance.now() - t0;
+            const tok = usage && (usage.completion_tokens || usage.output_tokens)
+                ? (usage.completion_tokens || usage.output_tokens) : chunkTokens;
+            const decodeMs = ttft !== null ? Math.max(end - ttft, 1) : end;
+            return { tokens: tok, decodeMs, ttftMs: ttft, totalMs: end, tokenSource: usage ? 'server' : 'estimate' };
+        }
+
+        async function runSteadyDecode(opts) {
+            const durMs = Math.max(3, Number(opts.durationSec) || 10) * 1000;
+            const t0 = performance.now();
+            let tokens = 0, decodeMs = 0, reqs = 0, failed = 0, ttfts = [];
+            while (isTestingRunning && (performance.now() - t0) < durMs) {
+                const salt = Math.floor(Math.random() * 1073741823) + 1;   // 每请求不同 → 不吃前缀缓存
+                const text = generatePrompt(opts.promptLen, 'openai', salt);
+                try {
+                    const r = await steadyDecodeProbe(opts.apiUrl, opts.modelName, text, opts.maxTokens, opts.timeout, opts.apiKey);
+                    if (r.tokens > 0) {
+                        tokens += r.tokens; decodeMs += r.decodeMs; reqs++;
+                        if (r.ttftMs) ttfts.push(r.ttftMs);
+                    } else { failed++; }
+                } catch (e) { failed++; }
+                if (reqs === 0 && failed >= 3) break;   // 连着三次全失败就别硬撑
+            }
+            const windowMs = performance.now() - t0;
+            const avgTtft = ttfts.length ? ttfts.reduce((a, b) => a + b, 0) / ttfts.length : null;
+            return {
+                tokS: decodeMs > 0 ? tokens / (decodeMs / 1000) : 0,
+                tokens, requests: reqs, failed,
+                windowSec: windowMs / 1000,
+                promptLen: opts.promptLen, maxTokens: opts.maxTokens,
+                ttftMs: avgTtft
+            };
+        }
+
         const startTestBtn = document.getElementById('startTest');
         const stopTestBtn = document.getElementById('stopTest');
         const copyMarkdownBtn = document.getElementById('copyMarkdown');
@@ -3834,6 +3914,7 @@ mood.
                     concRuns: (typeof window !== 'undefined' && Array.isArray(window._concRuns)) ? JSON.parse(JSON.stringify(window._concRuns)) : [],
                     // 每遍原始值（长度/遍号/prefill 毫秒与速度/排队估算/是否保留/剔除原因/token 来源）
                     passLog: (typeof window !== 'undefined' && Array.isArray(window._passLog)) ? JSON.parse(JSON.stringify(window._passLog)) : [],
+                    steady: (typeof window !== 'undefined' && window._steady) ? JSON.parse(JSON.stringify(window._steady)) : null,
                     tierInfo: (typeof window !== 'undefined' && window._tierInfo) ? JSON.parse(JSON.stringify(window._tierInfo)) : null
                 };
 
@@ -6980,6 +7061,34 @@ try {
                 resultsDiv.querySelector('tbody').appendChild(errorRow);
             }
 
+            // 稳态解码：只在单并发下跑，结果作为同一张表的最后一行（不另开标签页）
+            try {
+                const okSteady = testResultsData.filter(r => r.prefillSpeed !== 'N/A' && r.outputSpeed !== 'N/A');
+                if (isTestingRunning && concurrency === 1 && okSteady.length > 0 && currentApiType === 'openai') {
+                    const promptLen = Math.max(...okSteady.map(r => parseFloat(r.promptLength) || 0));
+                    const steadyDur = Math.min(Math.max(parseInt(window._steadySec || localStorage.getItem('chirpbenchSteadySec') || '10', 10) || 10, 3), 60);
+                    const steadyOut = 256;
+                    const tbody = resultsDiv.querySelector('tbody');
+                    const srow = document.createElement('tr');
+                    srow.innerHTML = '<td>' + promptLen + '<span style="margin-left:6px;padding:1px 6px;border:1px solid #33605c;border-radius:8px;font-size:11px;color:#7fd1c8;">稳态</span></td>' +
+                        '<td>—</td><td>—</td><td>' + steadyOut + ' × …</td><td>测…</td><td>测…</td><td>' + steadyDur + ' s 窗口内连续请求</td><td>—</td>';
+                    if (tbody) tbody.appendChild(srow);
+                    startTestBtn.textContent = (translations[currentLang].msgTesting || '测试中') + ' 稳态解码';
+                    const st = await runSteadyDecode({
+                        apiUrl, modelName: currentModelName, promptLen,
+                        durationSec: steadyDur, maxTokens: steadyOut, timeout, apiKey: (document.getElementById('apiKey')?.value?.trim() || '')
+                    });
+                    window._steady = st;
+                    if (tbody) {
+                        srow.innerHTML = '<td>' + promptLen + '<span style="margin-left:6px;padding:1px 6px;border:1px solid #33605c;border-radius:8px;font-size:11px;color:#7fd1c8;">稳态</span></td>' +
+                            '<td>—</td><td>—</td><td>' + steadyOut + '</td>' +
+                            '<td>' + st.windowSec.toFixed(1) + ' s</td>' +
+                            '<td>' + st.tokS.toFixed(2) + '</td>' +
+                            '<td>' + st.requests + ' 请求 / ' + st.tokens.toLocaleString() + ' token' + (st.failed ? ' / 失败 ' + st.failed : '') + '</td><td>—</td>';
+                    }
+                }
+            } catch (e) { console.error('[steady] 稳态解码失败', e); }
+
             // ChirpBench tier: run concurrency probes (capability only, speeds NOT recorded)
             try {
                 const okRows = testResultsData.filter(r => r.prefillSpeed !== 'N/A' && r.outputSpeed !== 'N/A');
@@ -8090,6 +8199,21 @@ ${_uploadBtn}
 
             // 每遍原始值（审查用：能看出成绩是中位数还是被剔除过）
             try {
+                // 稳态解码（若有）：和每遍原始数据并列，一行摘要
+                if (record.steady && Number(record.steady.tokens) > 0) {
+                    const _s = record.steady;
+                    const _sb = document.createElement('div');
+                    _sb.style.cssText = 'background:#161b26;border:1px solid #2a3140;border-radius:6px;padding:15px;margin-bottom:20px;color:#e6edf3;';
+                    _sb.innerHTML = '<h4 style="color:#61afef;margin:0 0 8px;">稳态解码（' + Number(_s.windowSec).toFixed(1) + ' 秒窗口）</h4>' +
+                        '<div style="font-size:13px;color:#c9d1d9;line-height:1.9;">' +
+                        '解码速度 <b style="color:#e6edf3;">' + Number(_s.tokS).toFixed(2) + ' tok/s</b>（首字之后的纯解码时间）<br>' +
+                        '提示词长度 ' + _s.promptLen + ' · 每请求输出上限 ' + _s.maxTokens + ' · 完成 ' + _s.requests + ' 个请求 · 共 ' + Number(_s.tokens).toLocaleString() + ' token' +
+                        (_s.failed ? ' · 失败 ' + _s.failed : '') +
+                        (_s.ttftMs ? '<br>平均首字延迟 ' + Math.round(_s.ttftMs) + ' ms' : '') +
+                        '</div>';
+                    detailContent.appendChild(_sb);
+                }
+
                 const _pl = Array.isArray(record.passLog) ? record.passLog : [];
                 if (_pl.length) {
                     const _rows = _pl.map(x => `<tr style="border-bottom:1px solid #2a3140;">` +
