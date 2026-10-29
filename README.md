@@ -88,7 +88,7 @@ So `index.html` does two things, and both are part of the measurement definition
 1. every request — each repeat pass, each concurrency request, each calibration probe — is prefixed with a fresh random `[s xxxxxxxx]` marker;
 2. any pass whose prefill time is under 40% of the fastest pass at the same length is discarded as a cache hit.
 
-Removing or weakening either one makes the numbers invalid: they stop measuring prompt-processing speed and start measuring how well the server caches. Leaderboard submissions are cross-checked by independent re-tests (5 different users, prefill within 5%, decode within 10%) and by a server-recomputed `result_hash`, so inflated runs are rejected — but a fork that drops the nonce will simply produce numbers that are not comparable with ChirpBench results.
+Removing or weakening either one makes the numbers invalid: they stop measuring prompt-processing speed and start measuring how well the server caches. Leaderboard submissions are cross-checked by independent re-tests (5 different users; average prefill within 5%, average decode within 10%) and by a server-recomputed `result_hash`, so inflated runs are rejected — but a fork that drops the nonce will simply produce numbers that are not comparable with ChirpBench results.
 
 ## Measurement methodology
 
@@ -171,7 +171,7 @@ Why GPLv3: the code is public so anyone can audit the measurement logic, the upl
 1. 每一个请求——每一遍、每个并发请求、每次校准探针——都带一个新的随机 `[s xxxxxxxx]` 前缀；
 2. 同一长度下，某遍 prefill 耗时不到最快那遍 40% 的，判定为缓存命中并剔除。
 
-去掉或削弱任何一条，成绩就失效：那时测的不再是 prefill 速度，而是服务端的缓存命中率。上传的成绩另有独立复测（5 位不同用户，prefill 偏差 5%、decode 偏差 10%）和由服务端重算的 `result_hash` 兜底，虚高的记录进不了榜——但删掉随机前缀的分叉版本，产出的数字与本榜不可比。
+去掉或削弱任何一条，成绩就失效：那时测的不再是 prefill 速度，而是服务端的缓存命中率。上传的成绩另有独立复测（5 位不同用户，平均 prefill 偏差 5%、平均 decode 偏差 10%）和由服务端重算的 `result_hash` 兜底，虚高的记录进不了榜——但删掉随机前缀的分叉版本，产出的数字与本榜不可比。
 
 ## 测量口径
 
