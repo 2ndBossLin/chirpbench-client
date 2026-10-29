@@ -3915,6 +3915,7 @@ mood.
                     // 每遍原始值（长度/遍号/prefill 毫秒与速度/排队估算/是否保留/剔除原因/token 来源）
                     passLog: (typeof window !== 'undefined' && Array.isArray(window._passLog)) ? JSON.parse(JSON.stringify(window._passLog)) : [],
                     steady: (typeof window !== 'undefined' && window._steady) ? JSON.parse(JSON.stringify(window._steady)) : null,
+                    integrity: (typeof window !== 'undefined' && window._integrity) ? JSON.parse(JSON.stringify(window._integrity)) : null,
                     tierInfo: (typeof window !== 'undefined' && window._tierInfo) ? JSON.parse(JSON.stringify(window._tierInfo)) : null
                 };
 
@@ -5340,6 +5341,8 @@ try {
                         // 详情数据：保存第一个请求的prompt和output
                         promptText: firstPrompt,
                         outputText: concurrencyResults[0]?.outputContent || '',
+                        degenerate: concurrencyResults.some(c => c && c.degenerate),
+                        tokenMismatch: concurrencyResults.some(c => c && c.tokenMismatch),
                         reasoningText: concurrencyResults[0]?.reasoningContent || '',
                         completionText: concurrencyResults[0]?.completionContent || '',
                         usageInfo: concurrencyResults[0]?.usageInfo || null,  // 保存usage信息
@@ -5854,6 +5857,12 @@ try {
                     actualPromptTokens,  //  返回实际的prompt token数
                     promptTokenSource,   //  estimate / server / none
                     outputContent: outputContent + reasoningContent,  // 完整输出内容（思考+答案）
+                    // 隐藏闸门（不展示）：输出是否退化；token 估算与服务端是否严重不符
+                    degenerate: detectDegenerateOutput(outputContent + reasoningContent),
+                    tokenMismatch: (promptTokenSource === 'server' && hasPositiveNumber(actualPromptTokensFromUsage)
+                        && Number(localPromptEstimate) > 128)
+                        ? Math.abs(Number(actualPromptTokensFromUsage) - Number(localPromptEstimate)) / Math.max(Number(actualPromptTokensFromUsage), 1) > 0.5
+                        : false,
                     reasoningContent: reasoningContent,  // 单独的思考内容
                     completionContent: outputContent,  // 单独的答案内容
                     usageInfo: usageInfo,  // API返回的完整usage信息
@@ -5870,6 +5879,39 @@ try {
                 console.error(`[Error] executeAndMeasureRequest异常:`, error);
                 throw error; // 重新抛出
             }
+        }
+
+        // ---- 隐藏质量闸门 1：输出退化（复读/词表塌缩），成绩虚高时通常伴随出现 ----
+        function detectDegenerateOutput(text) {
+            try {
+                const t = String(text || '');
+                if (t.length < 400) return false;
+                const words = t.split(/\s+/).filter(Boolean);
+                // A. 尾部 256 字符块在全文出现 ≥5 次 → 明显复读
+                const blockLen = Math.min(256, Math.floor(t.length / 4));
+                if (blockLen >= 64) {
+                    const block = t.slice(-blockLen);
+                    let count = 0, idx = 0;
+                    while ((idx = t.indexOf(block, idx)) !== -1) {
+                        count++; idx += blockLen;
+                        if (count >= 5) return true;
+                    }
+                }
+                if (words.length >= 200) {
+                    // B. 词多样性过低（唯一词占全部词 < 12%）
+                    if ((new Set(words).size / words.length) < 0.12) return true;
+                    // C. 某个 3-gram 占全部 3-gram 的三分之一以上
+                    const m = new Map();
+                    for (let k = 0; k + 3 <= words.length; k++) {
+                        const key = words[k] + ' ' + words[k + 1] + ' ' + words[k + 2];
+                        m.set(key, (m.get(key) || 0) + 1);
+                    }
+                    let top = 0;
+                    m.forEach(v => { if (v > top) top = v; });
+                    if (top / Math.max(words.length - 2, 1) > 0.35) return true;
+                }
+            } catch (e) { }
+            return false;
         }
 
         function hasUsableSpeedValue(value) {
@@ -6304,6 +6346,8 @@ try {
                         // 详情数据：保存第一个请求的prompt和output
                         promptText: firstPrompt,
                         outputText: concurrencyResults[0]?.outputContent || '',
+                        degenerate: concurrencyResults.some(c => c && c.degenerate),
+                        tokenMismatch: concurrencyResults.some(c => c && c.tokenMismatch),
                         reasoningText: concurrencyResults[0]?.reasoningContent || '',
                         completionText: concurrencyResults[0]?.completionContent || '',
                         usageInfo: concurrencyResults[0]?.usageInfo || null,  // 保存usage信息
@@ -7113,9 +7157,30 @@ try {
                 }
             } catch (e) { console.error('[steady] 长跑测试失败', e); }
 
+            // 隐藏质量闸门：输出退化 / token 与服务端严重不符的档位按无效处理（不通过时才提示一句）
+            try {
+                const _bad = testResultsData.filter(r => r.degenerate);
+                const _mism = testResultsData.filter(r => r.tokenMismatch);
+                window._integrity = {
+                    degenerateLens: _bad.map(r => parseFloat(r.promptLength)).filter(x => x > 0),
+                    tokenMismatchLens: _mism.map(r => parseFloat(r.promptLength)).filter(x => x > 0)
+                };
+                if (_bad.length) {
+                    const _line = document.createElement('div');
+                    _line.style.cssText = 'margin:10px 2px 0;font-size:13px;color:#d6b45a;line-height:1.8;';
+                    const _lensArr = window._integrity.degenerateLens;
+                    const _allBad = _lensArr.length >= testResultsData.length;
+                    const _lensTxt = _allBad ? '所有长度档' : (Math.min(..._lensArr) + '–' + Math.max(..._lensArr) + ' 共 ' + _lensArr.length + ' 档');
+                    _line.textContent = _allBad
+                        ? '⚠ 输出在反复重复同一段内容（模型复读），本次成绩按无效处理'
+                        : '⚠ ' + _lensTxt + '的输出在重复同一段内容，这些档按无效处理，不计入评级';
+                    resultsDiv.appendChild(_line);
+                }
+            } catch (e) { console.warn('[integrity]', e); }
+
             // ChirpBench tier: run concurrency probes (capability only, speeds NOT recorded)
             try {
-                const okRows = testResultsData.filter(r => r.prefillSpeed !== 'N/A' && r.outputSpeed !== 'N/A');
+                const okRows = testResultsData.filter(r => r.prefillSpeed !== 'N/A' && r.outputSpeed !== 'N/A' && !r.degenerate);
                 const _abortedNow = !isTestingRunning; // 手动中止：长度梯子没跑完，不能判定评级
                 if (_abortedNow) {
                     window._tierInfo = null;
