@@ -7155,12 +7155,12 @@ try {
                 resultsDiv.querySelector('tbody').appendChild(errorRow);
             }
 
-            // 长跑测试：表格下面一句人话结论（不用懂 prefill/decode 也能读）
+            // 长跑（隐藏评分项）：只采集数据、不显示任何界面元素
             try {
-                const okSteady = testResultsData.filter(r => r.prefillSpeed !== 'N/A' && r.outputSpeed !== 'N/A');
+                const okSteady = testResultsData.filter(r => r.prefillSpeed !== 'N/A' && r.outputSpeed !== 'N/A' && !r.degenerate);
                 if (isTestingRunning && concurrency === 1 && okSteady.length > 0 && currentApiType === 'openai') {
+                    // 固定短上下文：拿最大档（128k/256k）跑，一次 prefill 就上百秒，窗口里只塞得下 1 个请求
                     const maxMeasured = Math.max(...okSteady.map(r => parseFloat(r.promptLength) || 0));
-                    // 长跑用固定短上下文：拿最大档（128k/256k）跑，一次 prefill 就上百秒，窗口里只塞得下 1 个请求，量到的是 prefill 不是持续解码
                     const promptLen = Math.min(maxMeasured, 2048);
                     const steadyDur = Math.min(Math.max(parseInt(window._steadySec || localStorage.getItem('chirpbenchSteadySec') || '10', 10) || 10, 3), 60);
                     const steadyOut = 256;
@@ -7168,41 +7168,18 @@ try {
                         || okSteady.find(r => (parseFloat(r.promptLength) || 0) === maxMeasured);
                     const baseSpeed = baseRow ? parseFloat(baseRow.outputSpeed) : 0;
 
-                    const line = document.createElement('div');
-                    line.style.cssText = 'margin:12px 2px 0;font-size:13px;color:#8b949e;line-height:1.9;';
-                    line.innerHTML = '长跑测试：连续生成 ' + steadyDur + ' 秒，测量中…';
-                    resultsDiv.appendChild(line);
-                    startTestBtn.textContent = (translations[currentLang].msgTesting || '测试中') + ' 长跑';
-
                     const st = await runSteadyDecode({
                         apiUrl, modelName: currentModelName, promptLen,
                         durationSec: steadyDur, maxTokens: steadyOut, timeout,
-                        apiKey: (document.getElementById('apiKey')?.value?.trim() || '')
+                        apiKey: (document.getElementById('apiKey') || {}).value ? document.getElementById('apiKey').value.trim() : ''
                     });
-                    window._steady = st;
-
-                    if (st.requests < 2 || st.tokens < 128) {
-                        line.innerHTML = '长跑测试：这次只完成 ' + st.requests + ' 个请求（' + st.windowSec.toFixed(0) + ' 秒），样本太少，本次不判定';
-                        return;
-                    }
-                    // 半程对比：同一次长跑里前一半请求 vs 后一半，避免和不同输出长度的单次行硬比
                     const _fs = st.firstHalfTokS, _ss = st.secondHalfTokS;
-                    const pct = (_fs && _ss) ? (_ss - _fs) / _fs * 100 : null;
-                    const dot = (pct !== null && pct <= -3) ? '⚠' : '✓';
-                    let verdict;
-                    if (pct === null) verdict = '这次请求数不够对半比，只能看绝对值';
-                    else if (pct <= -3) verdict = '后半程比前半程慢 ' + Math.abs(pct).toFixed(1) + '%，说明长时间满载会降速';
-                    else if (pct >= 3) verdict = '后半程还快 ' + pct.toFixed(1) + '%，长时间运行没掉速';
-                    else verdict = '前半程后半程基本持平，能长时间保持这个速度';
-
-                    line.innerHTML = dot + ' 长跑测试：连续生成 ' + st.windowSec.toFixed(0) + ' 秒，' +
-                        '<b style="color:#e6edf3;">' + st.tokS.toFixed(1) + ' token/秒</b> —— ' +
-                        '<span style="color:' + ((pct !== null && pct <= -3) ? '#d6b45a' : '#c9d1d9') + ';">' + verdict + '</span>' +
-                        '<br><span style="font-size:12px;">（' + st.requests + ' 次请求 / ' + st.tokens.toLocaleString() + ' token' +
-                        (st.failed ? ' / 失败 ' + st.failed : '') +
-                        (st.ttftMs ? ' / 首字 ' + Math.round(st.ttftMs) + ' ms' : '') + '）</span>';
+                    st.dropPct = (_fs && _ss) ? Number(((_ss - _fs) / _fs * 100).toFixed(1)) : null;
+                    st.singleTokS = baseSpeed || null;
+                    st.enough = (st.requests >= 2 && st.tokens >= 128);
+                    window._steady = st;
                 }
-            } catch (e) { console.error('[steady] 长跑测试失败', e); }
+            } catch (e) { console.warn('[steady] 长跑采集失败', e); }
 
             // 隐藏质量闸门：输出退化 / token 与服务端严重不符的档位按无效处理（不通过时才提示一句）
             try {
@@ -7210,7 +7187,8 @@ try {
                 const _mism = testResultsData.filter(r => r.tokenMismatch);
                 window._integrity = {
                     degenerateLens: _bad.map(r => parseFloat(r.promptLength)).filter(x => x > 0),
-                    tokenMismatchLens: _mism.map(r => parseFloat(r.promptLength)).filter(x => x > 0)
+                    tokenMismatchLens: _mism.map(r => parseFloat(r.promptLength)).filter(x => x > 0),
+                    steadyDropPct: (window._steady && window._steady.enough) ? window._steady.dropPct : null
                 };
                 if (_bad.length) {
                     const _line = document.createElement('div');
@@ -8336,19 +8314,6 @@ ${_uploadBtn}
             // 每遍原始值（审查用：能看出成绩是中位数还是被剔除过）
             try {
                 // 稳态解码（若有）：和每遍原始数据并列，一行摘要
-                if (record.steady && Number(record.steady.tokens) > 0) {
-                    const _s = record.steady;
-                    const _sb = document.createElement('div');
-                    _sb.style.cssText = 'background:#161b26;border:1px solid #2a3140;border-radius:6px;padding:15px;margin-bottom:20px;color:#e6edf3;';
-                    _sb.innerHTML = '<h4 style="color:#61afef;margin:0 0 8px;">长跑测试（连续生成 ' + Number(_s.windowSec).toFixed(1) + ' 秒）</h4>' +
-                        '<div style="font-size:13px;color:#c9d1d9;line-height:1.9;">' +
-                        '生成速度 <b style="color:#e6edf3;">' + Number(_s.tokS).toFixed(1) + ' token/秒</b>（不含读提示词的时间）<br>' +
-                        '提示词长度 ' + _s.promptLen + ' · 每请求输出上限 ' + _s.maxTokens + ' · 完成 ' + _s.requests + ' 个请求 · 共 ' + Number(_s.tokens).toLocaleString() + ' token' +
-                        (_s.failed ? ' · 失败 ' + _s.failed : '') +
-                        (_s.ttftMs ? '<br>平均首字延迟 ' + Math.round(_s.ttftMs) + ' ms' : '') +
-                        '</div>';
-                    detailContent.appendChild(_sb);
-                }
 
                 const _pl = Array.isArray(record.passLog) ? record.passLog : [];
                 if (_pl.length) {
