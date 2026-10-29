@@ -7017,9 +7017,21 @@ try {
                 t.tableHeaderOutputSpeed,
                 t.tableHeaderStatus,
                 t.tableHeaderDetail
-            ].forEach(text => {
+            ].forEach((text, idx) => {
                 const th = document.createElement('th');
                 th.innerHTML = text;
+                // 悬停一句人话：新人不用先搞懂 prefill/decode
+                const _tips = [
+                    '这次测的是多长的上下文（提示词里有多少 token）',
+                    '读提示词花的时间（专业叫 prefill）',
+                    '读提示词的速度：token ÷ 读的时间',
+                    '这次生成了多少 token',
+                    '生成这些字花了多久',
+                    '生成速度（专业叫 decode）：token ÷ 生成时间',
+                    '成功几次 / 总共几次',
+                    ''
+                ];
+                if (_tips[idx]) th.title = _tips[idx];
                 headerRow.appendChild(th);
             });
             thead.appendChild(headerRow);
