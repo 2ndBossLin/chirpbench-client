@@ -5039,8 +5039,6 @@ const row = document.createElement('tr');
                 const failedMessages = st.acc.failedMessages;
                 let firstPrompt = st.acc.firstPrompt;
                 st.networkLatencyMs = await collectNetworkLatencySample(latencySamples, apiUrl, 'openai', modelName, timeout);
-                // 延迟探针自己也是请求：留一点空隙让服务端把探针排空，避免它挤进本次测量的 prefill
-                await new Promise(_r => setTimeout(_r, 150));
                 const networkLatencyMs = st.networkLatencyMs;
                 st.cells[6].textContent = repeatCount > 1
                     ? `${concurrency} ${translations[currentLang].msgConcurrentTesting} ${rep + 1}/${repeatCount}`
@@ -5442,7 +5440,7 @@ try {
             for (let pass = 0; pass < repeatCount && !aborted; pass++) {
                 for (let idx = 0; idx < testLengths.length; idx++) {
                     if (!isTestingRunning) { aborted = true; break; }
-                    const st = ensureState(idx);
+                    const st = ensureState(idx);
                     if (typeof window.__passProgress === 'function') window.__passProgress(pass + 1, repeatCount);
                     await runLengthOnce(st, pass);
                     const stopAll = await finalizeLen(st);
@@ -8379,7 +8377,7 @@ ${_uploadBtn}
             }
             // 填充备注字段
             document.getElementById('notes').value = record.notes || '';
-            setTimeout(function () { try { renderConcurrencyResults(); } catch (e) { console.warn('conc render', e); } }, 0);
+            setTimeout(function () { try { renderConcurrencyResults(); } catch (e) { console.warn('conc render', e); } }, 0);
             document.getElementById('runCommand').value = record.config?.runCommand || '';
 
             // 加载历史记录的结果数据
