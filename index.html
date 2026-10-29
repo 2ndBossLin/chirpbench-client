@@ -6867,6 +6867,36 @@ try {
             overlay.appendChild(dialog);
             document.body.appendChild(overlay);
 
+            // 每遍原始数据（仅当前测试轮次）：按长度过滤，>1 条才显示
+            try {
+                const _pl = (Array.isArray(window._passLog) ? window._passLog : [])
+                    .filter(x => Number(x.length) === Number(testData.promptLength));
+                if (_pl.length > 1) {
+                    const _rows = _pl.map(x => `<tr style="border-bottom:1px solid #2a3140;">`
+                        + `<td style="padding:4px 8px;">${x.pass}</td>`
+                        + `<td style="padding:4px 8px;">${x.prefillMs}</td>`
+                        + `<td style="padding:4px 8px;">${x.prefillTokS}</td>`
+                        + `<td style="padding:4px 8px;">${x.decodeTokS}</td>`
+                        + `<td style="padding:4px 8px;">${x.tokens}</td>`
+                        + `<td style="padding:4px 8px;">${x.tokenSource}</td>`
+                        + `<td style="padding:4px 8px;">${x.source || ''}</td></tr>`).join('');
+                    const _box = document.createElement('div');
+                    _box.className = 'detail-section';
+                    _box.innerHTML = `<div class="detail-section-title">每遍原始数据（${_pl.length} 条 · 中位数取自这几条）</div>`
+                        + `<table style="width:100%;border-collapse:collapse;font-size:12px;color:#c9d1d9;">`
+                        + `<thead><tr style="color:#8b949e;text-align:left;">`
+                        + `<th style="padding:4px 8px;">遍</th><th style="padding:4px 8px;">prefill ms</th>`
+                        + `<th style="padding:4px 8px;">prefill tok/s</th><th style="padding:4px 8px;">decode tok/s</th>`
+                        + `<th style="padding:4px 8px;">实发 tokens</th><th style="padding:4px 8px;">token 来源</th>`
+                        + `<th style="padding:4px 8px;">计时来源</th></tr></thead>`
+                        + `<tbody>${_rows}</tbody></table>`;
+                    const _btn = dialog.querySelector('.detail-close-button');
+                    const _anchor = _btn ? (_btn.closest('.detail-section') || _btn) : null;
+                    if (_anchor && _anchor.parentNode === dialog) dialog.insertBefore(_box, _anchor);
+                    else dialog.appendChild(_box);
+                }
+            } catch (e) { console.warn('[passLog render]', e); }
+
             // 关闭按钮事件
             const closeBtn = dialog.querySelector('.detail-close-button');
             closeBtn.onclick = () => {
