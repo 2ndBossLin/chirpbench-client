@@ -70,6 +70,24 @@ If 18099 is taken, the client automatically tries the next free port (up to 20 a
 | `/__exec/status`, `/__exec/log` | command status and log |
 | `/__kill` | stop processes started by this client |
 
+## Measurement integrity — the cache-busting prefix is not optional
+
+Inference servers cache prompt prefixes (vLLM, llama.cpp and SGLang all ship this enabled by default). If the client sends byte-identical prompts, the second and later prefills are served from KV cache while the client still counts every token as computed — the reported prefill speed then comes out far too high.
+
+Measured here on one machine, one model, one ladder, 16,384-token length, 2-way concurrency:
+
+- client **without** cache busting: **4,590 tok/s**
+- client **with** cache busting: **2,565 tok/s**
+
+That is **+79%** from cache reuse alone, with no hardware change. The effect grows with context length, because every longer prompt contains the shorter one as an exact prefix.
+
+So `index.html` does two things, and both are part of the measurement definition rather than an optimisation:
+
+1. every request — each repeat pass, each concurrency request, each calibration probe — is prefixed with a fresh random `[s xxxxxxxx]` marker;
+2. any pass whose prefill time is under 40% of the fastest pass at the same length is discarded as a cache hit.
+
+Removing or weakening either one makes the numbers invalid: they stop measuring prompt-processing speed and start measuring how well the server caches. Leaderboard submissions are cross-checked by independent re-tests (5 different users, prefill within 5%, decode within 10%) and by a server-recomputed `result_hash`, so inflated runs are rejected — but a fork that drops the nonce will simply produce numbers that are not comparable with ChirpBench results.
+
 ## Measurement methodology
 
 - Each context length is repeated multiple times (3 passes for rated tiers); **the median of a single pass is reported**, not the sum of passes
@@ -132,6 +150,24 @@ Why GPLv3: the code is public so anyone can audit the measurement logic, the upl
 ## 构建与运行
 
 需要 Go 1.22+，无需 CGO，`cd client && ./build.sh all` 产出 Linux 与 Windows 两个版本到 `client/out/`。运行时 `./chirpbench-client`（默认 `127.0.0.1:18099`），`-port` 换端口，`-open=false` 不自动开浏览器；端口被占用会自动往后顺延，最多试 20 个。
+
+## 测量可信度：随机前缀不是可选项
+
+推理服务默认都会缓存 prompt 前缀（vLLM、llama.cpp、SGLang 都一样）。如果客户端每一遍发的内容完全相同，第二遍起服务端直接从 KV 缓存取，而客户端仍按全部 token 计算速度——报出来的 prefill 就会虚高。
+
+同一台机器、同一个模型、同一条梯子、16384 档、2 并发实测：
+
+- 不做缓存失效的客户端：**4590 tok/s**
+- 做了缓存失效的客户端：**2565 tok/s**
+
+硬件没变，只因为缓存复用就高出 **79%**。而且上下文越长差得越多，因为长 prompt 完整包含短 prompt 的前缀。
+
+因此 `index.html` 做了两件事，它们属于测量口径本身，不是性能优化：
+
+1. 每一个请求——每一遍、每个并发请求、每次校准探针——都带一个新的随机 `[s xxxxxxxx]` 前缀；
+2. 同一长度下，某遍 prefill 耗时不到最快那遍 40% 的，判定为缓存命中并剔除。
+
+去掉或削弱任何一条，成绩就失效：那时测的不再是 prefill 速度，而是服务端的缓存命中率。上传的成绩另有独立复测（5 位不同用户，prefill 偏差 5%、decode 偏差 10%）和由服务端重算的 `result_hash` 兜底，虚高的记录进不了榜——但删掉随机前缀的分叉版本，产出的数字与本榜不可比。
 
 ## 测量口径
 
