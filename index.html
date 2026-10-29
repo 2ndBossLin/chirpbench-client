@@ -3237,7 +3237,7 @@ mood.
                         if (o.usage) usage = o.usage;
                         const ch = (o.choices || [])[0];
                         const d = ch && ch.delta;
-                        const txt = d && (d.content || d.reasoning_content);
+                        const txt = d && (d.content || d.reasoning_content || d.reasoning);
                         if (txt) { chunkTokens++; if (ttft === null) ttft = performance.now() - t0; }
                     }
                 }
@@ -3252,7 +3252,7 @@ mood.
         async function runSteadyDecode(opts) {
             const durMs = Math.max(3, Number(opts.durationSec) || 10) * 1000;
             const t0 = performance.now();
-            let tokens = 0, decodeMs = 0, reqs = 0, failed = 0, ttfts = [];
+            let tokens = 0, decodeMs = 0, reqs = 0, failed = 0, ttfts = []; const perReq = [];
             while (isTestingRunning && (performance.now() - t0) < durMs) {
                 const salt = Math.floor(Math.random() * 1073741823) + 1;   // 每请求不同 → 不吃前缀缓存
                 const text = generatePrompt(opts.promptLen, 'openai', salt);
@@ -3261,18 +3261,22 @@ mood.
                     if (r.tokens > 0) {
                         tokens += r.tokens; decodeMs += r.decodeMs; reqs++;
                         if (r.ttftMs) ttfts.push(r.ttftMs);
+                        perReq.push(r.tokens / (r.decodeMs / 1000));
                     } else { failed++; }
                 } catch (e) { failed++; }
                 if (reqs === 0 && failed >= 3) break;   // 连着三次全失败就别硬撑
             }
             const windowMs = performance.now() - t0;
+            const _half = Math.floor(perReq.length / 2);
+            const _firstHalf = _half > 0 ? perReq.slice(0, _half).reduce((a,b)=>a+b,0)/_half : null;
+            const _secondHalf = _half > 0 ? perReq.slice(perReq.length-_half).reduce((a,b)=>a+b,0)/_half : null;
             const avgTtft = ttfts.length ? ttfts.reduce((a, b) => a + b, 0) / ttfts.length : null;
             return {
                 tokS: decodeMs > 0 ? tokens / (decodeMs / 1000) : 0,
                 tokens, requests: reqs, failed,
                 windowSec: windowMs / 1000,
                 promptLen: opts.promptLen, maxTokens: opts.maxTokens,
-                ttftMs: avgTtft
+                ttftMs: avgTtft, firstHalfTokS: _firstHalf, secondHalfTokS: _secondHalf
             };
         }
 
@@ -7155,10 +7159,13 @@ try {
             try {
                 const okSteady = testResultsData.filter(r => r.prefillSpeed !== 'N/A' && r.outputSpeed !== 'N/A');
                 if (isTestingRunning && concurrency === 1 && okSteady.length > 0 && currentApiType === 'openai') {
-                    const promptLen = Math.max(...okSteady.map(r => parseFloat(r.promptLength) || 0));
+                    const maxMeasured = Math.max(...okSteady.map(r => parseFloat(r.promptLength) || 0));
+                    // 长跑用固定短上下文：拿最大档（128k/256k）跑，一次 prefill 就上百秒，窗口里只塞得下 1 个请求，量到的是 prefill 不是持续解码
+                    const promptLen = Math.min(maxMeasured, 2048);
                     const steadyDur = Math.min(Math.max(parseInt(window._steadySec || localStorage.getItem('chirpbenchSteadySec') || '10', 10) || 10, 3), 60);
                     const steadyOut = 256;
-                    const baseRow = okSteady.find(r => (parseFloat(r.promptLength) || 0) === promptLen);
+                    const baseRow = okSteady.find(r => (parseFloat(r.promptLength) || 0) === promptLen)
+                        || okSteady.find(r => (parseFloat(r.promptLength) || 0) === maxMeasured);
                     const baseSpeed = baseRow ? parseFloat(baseRow.outputSpeed) : 0;
 
                     const line = document.createElement('div');
@@ -7174,13 +7181,19 @@ try {
                     });
                     window._steady = st;
 
-                    const pct = baseSpeed > 0 ? (st.tokS - baseSpeed) / baseSpeed * 100 : null;
+                    if (st.requests < 2 || st.tokens < 128) {
+                        line.innerHTML = '长跑测试：这次只完成 ' + st.requests + ' 个请求（' + st.windowSec.toFixed(0) + ' 秒），样本太少，本次不判定';
+                        return;
+                    }
+                    // 半程对比：同一次长跑里前一半请求 vs 后一半，避免和不同输出长度的单次行硬比
+                    const _fs = st.firstHalfTokS, _ss = st.secondHalfTokS;
+                    const pct = (_fs && _ss) ? (_ss - _fs) / _fs * 100 : null;
                     const dot = (pct !== null && pct <= -3) ? '⚠' : '✓';
                     let verdict;
-                    if (pct === null) verdict = '这次没拿到单次成绩做参照，只能看绝对值';
-                    else if (pct <= -3) verdict = '比单次慢 ' + Math.abs(pct).toFixed(1) + '%，说明长时间满载会降速';
-                    else if (pct >= 3) verdict = '比单次还快 ' + pct.toFixed(1) + '%，长时间运行没掉速';
-                    else verdict = '和单次基本持平，能长时间保持这个速度';
+                    if (pct === null) verdict = '这次请求数不够对半比，只能看绝对值';
+                    else if (pct <= -3) verdict = '后半程比前半程慢 ' + Math.abs(pct).toFixed(1) + '%，说明长时间满载会降速';
+                    else if (pct >= 3) verdict = '后半程还快 ' + pct.toFixed(1) + '%，长时间运行没掉速';
+                    else verdict = '前半程后半程基本持平，能长时间保持这个速度';
 
                     line.innerHTML = dot + ' 长跑测试：连续生成 ' + st.windowSec.toFixed(0) + ' 秒，' +
                         '<b style="color:#e6edf3;">' + st.tokS.toFixed(1) + ' token/秒</b> —— ' +
