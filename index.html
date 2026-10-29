@@ -3174,6 +3174,7 @@ mood.
                 clientDecodeDurationMs,
                 clientTotalDurationMs,
                 clientHasPhaseBoundary: hasClientPhaseBoundary,
+                promptTokenSource: (results[0] && results[0].promptTokenSource) || 'none',
                 prefillSource,
                 decodeSource,
                 warnings
@@ -3831,6 +3832,8 @@ mood.
                     schema: 2,
                     // 多并发梯子明细：从历史补传时要用它一起上传
                     concRuns: (typeof window !== 'undefined' && Array.isArray(window._concRuns)) ? JSON.parse(JSON.stringify(window._concRuns)) : [],
+                    // 每遍原始值（长度/遍号/prefill 毫秒与速度/排队估算/是否保留/剔除原因/token 来源）
+                    passLog: (typeof window !== 'undefined' && Array.isArray(window._passLog)) ? JSON.parse(JSON.stringify(window._passLog)) : [],
                     tierInfo: (typeof window !== 'undefined' && window._tierInfo) ? JSON.parse(JSON.stringify(window._tierInfo)) : null
                 };
 
@@ -4684,6 +4687,7 @@ mood.
 
         // ===== ChirpBench tier: concurrency probe + tier badge =====
         window._concRuns = [];
+        window._passLog = [];
         async function runConcurrencyLadder(apiUrl, modelName, lengths, n, timeout, reps = 1) {
             // full v2 ladder at concurrency n; reps 遍（评级用 1 遍，多并发成绩可传 3）; returns points[]
             const apiKeyVal = (document.getElementById('apiKey') || {}).value || '';
@@ -5352,6 +5356,25 @@ try {
                     if (typeof window.__passProgress === 'function') window.__passProgress(pass + 1, repeatCount);
                     await runLengthOnce(st, pass);
                     const stopAll = await finalizeLen(st);
+                    // 每遍原始值：长度/遍号/prefill 毫秒与速度/decode/实发 token/token 来源/计时来源
+                    try {
+                        const _acc = st.acc && Array.isArray(st.acc.batchAggregates) ? st.acc.batchAggregates : [];
+                        const _a = _acc[_acc.length - 1];
+                        if (_a && Number(_a.prefillDurationMs) > 0) {
+                            window._passLog = Array.isArray(window._passLog) ? window._passLog : [];
+                            const _pm = Number(_a.prefillDurationMs), _tk = Number(_a.totalPromptTokens) || 0;
+                            const _dm = Number(_a.decodeDurationMs) || 0, _ok = Number(_a.totalOutputTokens) || 0;
+                            window._passLog.push({
+                                length: st.length, pass: pass + 1,
+                                prefillMs: Number(_pm.toFixed(1)),
+                                prefillTokS: Math.round(_tk / (_pm / 1000)),
+                                decodeTokS: Number((_dm > 0 ? _ok / (_dm / 1000) : 0).toFixed(1)),
+                                tokens: _tk,
+                                tokenSource: _a.promptTokenSource || 'none',
+                                source: _a.prefillSource || 'n/a'
+                            });
+                        }
+                    } catch (e) { console.warn('[passLog]', e); }
                     st.passDone = pass + 1;
                     progressBar.style.width = `${(((pass * testLengths.length) + idx + 1) / (repeatCount * testLengths.length)) * 100}%`;
                     if (stopAll) { aborted = true; break; }
@@ -5382,8 +5405,11 @@ try {
             let serverDecodeTimeMs = null;  //  服务器返回的decode真实处理时间
             let usageInfo = null; // 保存完整的usage对象用于详情展示
 
+            //  token 数来源：estimate=本地估算（后端不返回 usage 时才会保留）  server=服务端真实值
+            let promptTokenSource = 'none';
             if (hasPositiveNumber(promptTokenEstimate)) {
                 actualPromptTokensFromUsage = promptTokenEstimate;
+                promptTokenSource = 'estimate';
             }
 
             const response = await createFetchPromiseWithRetry(apiUrl, fetchOptions, timeout, 3, 1500);
@@ -5444,6 +5470,7 @@ try {
                                 actualOutputTokensFromUsage = usageStats.outputTokens;
                                 if (hasPositiveNumber(usageStats.promptTokens)) {
                                     actualPromptTokensFromUsage = usageStats.promptTokens;
+                                    promptTokenSource = 'server';
                                 }
 
                                 // 保存完整的usage对象用于详情展示（包含所有可能的字段）
@@ -5513,6 +5540,7 @@ try {
                                 actualOutputTokensFromUsage = completion;
                                 if (hasPositiveNumber(prompt)) {
                                     actualPromptTokensFromUsage = prompt;
+                                    promptTokenSource = 'server';
                                 }
 
                                 // 构造usage_info
@@ -5743,6 +5771,7 @@ try {
                     localEstimatedPromptTokens: localPromptEstimate,
                     localEstimatedOutputTokens: localOutputEstimate,
                     actualPromptTokens,  //  返回实际的prompt token数
+                    promptTokenSource,   //  estimate / server / none
                     outputContent: outputContent + reasoningContent,  // 完整输出内容（思考+答案）
                     reasoningContent: reasoningContent,  // 单独的思考内容
                     completionContent: outputContent,  // 单独的答案内容
@@ -6929,7 +6958,7 @@ try {
             // ladder ceiling by mode: main board standard 128k; pro mode 256k (tier needs it)
             const mlInput = document.getElementById('maxLength');
             if (mlInput) mlInput.value = (testMode === 'dev' || testMode === 'studio') ? '262144' : '131072';
-            window._tierInfo = null; window._concRuns = [];
+            window._tierInfo = null; window._concRuns = []; window._passLog = [];
             try { renderConcurrencyResults(); } catch (e) {}
 
             stopTestBtn.onclick = () => {
@@ -8058,6 +8087,28 @@ ${_uploadBtn}
             `;
 
             detailContent.innerHTML = html;
+
+            // 每遍原始值（审查用：能看出成绩是中位数还是被剔除过）
+            try {
+                const _pl = Array.isArray(record.passLog) ? record.passLog : [];
+                if (_pl.length) {
+                    const _rows = _pl.map(x => `<tr style="border-bottom:1px solid #2a3140;">` +
+                        `<td style="padding:4px 8px;">${x.length}</td><td style="padding:4px 8px;">${x.pass}</td>` +
+                        `<td style="padding:4px 8px;">${x.prefillMs}</td><td style="padding:4px 8px;">${x.prefillTokS}</td>` +
+                        `<td style="padding:4px 8px;">${x.decodeTokS}</td>` +
+                        `<td style="padding:4px 8px;">${x.tokens}</td><td style="padding:4px 8px;">${x.tokenSource}</td>` +
+                        `<td style="padding:4px 8px;">${x.source || ''}</td></tr>`).join('');
+                    const _box = document.createElement('div');
+                    _box.style.cssText = 'background:#161b26;border:1px solid #2a3140;border-radius:6px;padding:15px;margin-bottom:20px;color:#e6edf3;';
+                    _box.innerHTML = `<h4 style="color:#61afef;margin:0 0 10px;">每遍原始数据（${_pl.length} 条）</h4>` +
+                        `<table style="width:100%;border-collapse:collapse;font-size:12px;color:#c9d1d9;">` +
+                        `<thead><tr style="color:#8b949e;text-align:left;"><th style="padding:4px 8px;">长度</th><th style="padding:4px 8px;">遍</th>` +
+                        `<th style="padding:4px 8px;">prefill ms</th><th style="padding:4px 8px;">prefill tok/s</th>` +
+                        `<th style="padding:4px 8px;">decode tok/s</th><th style="padding:4px 8px;">实发 tokens</th><th style="padding:4px 8px;">token 来源</th><th style="padding:4px 8px;">计时来源</th></tr></thead>` +
+                        `<tbody>${_rows}</tbody></table>`;
+                    detailContent.appendChild(_box);
+                }
+            } catch (e) { console.warn('[passLog render]', e); }
         }
 
         /**
