@@ -2354,7 +2354,7 @@
         // Synthetic technical corpus (AI-authored, no pretraining contamination).
         // Byte-identical for every user/time. Mirrors python/benchmark_corpus/corpus_v2.txt
         // and python/benchmark_v2.py. v1 word-bag is retired for benchmark uploads.
-        const BENCHMARK_VERSION = 'v2.0';
+        const BENCHMARK_VERSION = 'v2.1';
         const CORPUS_SHA256 = '661a93cb12e367b29a7c6a2133cea64cae5b927c86a0e81264de74fd6313de46';
         const DECODE_TASK_SUFFIX = `
 Based on the technical text above, write a detailed summary of the key engineering trade-offs it describes. Use clear, coherent sentences and cover each section.`;
@@ -3010,6 +3010,18 @@ mood.
             return Math.max(requestedLength, 1);
         }
 
+        // v2.1 浮动输出：decode 窗口随档位反比浮动。投机解码（MTP 等）每次生成开头草稿命中率是冷的，
+        // 512 的短窗口测出的是"开局速度"（实测 65），长窗口才是稳态（llama.cpp 21k token 连续生成稳态 90）。
+        // 短档输出便宜就多给，长档输出贵就保住时长；口径见 METHODOLOGY.md。
+        function getOutputLengthFor(length) {
+            const L = Number(length) || 0;
+            if (L <= 1024) return 2048;
+            if (L <= 4096) return 1536;
+            if (L <= 16384) return 1024;
+            if (L <= 32768) return 768;
+            return 512;
+        }
+
         function getCalibratedGenerationPromptLength(length, calibration) {
             const resolvedLength = getResolvedPromptLength(length);
             if (!calibration || !Number.isFinite(calibration.tokenOffset)) return resolvedLength;
@@ -3023,7 +3035,7 @@ mood.
             let effectiveLength = resolvedLength;
             const ctxLimit = Number(window._serverCtxLimit);
             if (Number.isFinite(ctxLimit) && ctxLimit > 1024) {
-                const outLen = parseInt((document.getElementById('outputLength') || {}).value || '512', 10) || 512;
+                const outLen = getOutputLengthFor(resolvedLength);
                 // 词/词元比在 26 万字级还会再涨零点几个百分点，留 0.5%（至少 1024 token）余量
                 const safety = Math.max(1024, Math.round(ctxLimit * 0.005));
                 const room = ctxLimit - outLen - systemTokens - safety;
@@ -3913,7 +3925,7 @@ mood.
                     results: resultsToSave, // 根据设置保存完整或简化的结果
                     stats: stats, // 统计信息（min/max/avg/P50/P90/P95）
                     // 记录结构版本：旧版本记录（没有这个字段）禁止上传，避免绕过评级规则
-                    schema: 2,
+                    schema: 3,
                     // 多并发梯子明细：从历史补传时要用它一起上传
                     concRuns: (typeof window !== 'undefined' && Array.isArray(window._concRuns)) ? JSON.parse(JSON.stringify(window._concRuns)) : [],
                     // 每遍原始值（长度/遍号/prefill 毫秒与速度/排队估算/是否保留/剔除原因/token 来源）
@@ -4778,8 +4790,8 @@ mood.
             // full v2 ladder at concurrency n; reps 遍（评级用 1 遍，多并发成绩可传 3）; returns points[]
             const apiKeyVal = (document.getElementById('apiKey') || {}).value || '';
             const points = [];
-            const outLen = parseInt((document.getElementById('outputLength') || {}).value || '512', 10);
             for (const length of lengths) {
+                const outLen = getOutputLengthFor(length);
                 if (!isTestingRunning) break;
                 const batch = [];
                 for (let rep = 0; rep < reps; rep++) {
@@ -4860,7 +4872,6 @@ mood.
             const mainTable = resultsDiv.querySelector('table');
             if (mainTable && !mainTable.id) mainTable.id = 'mainResultTable';
 
-            const outLen = parseInt((document.getElementById('outputLength') || {}).value || '512', 10) || 512;
             runs.forEach(function (cr) {
                 const wrap = document.createElement('div');
                 wrap.className = 'conc-table-wrap';
@@ -4888,7 +4899,7 @@ mood.
                         (pt.prompt_length || 0).toLocaleString(),
                         (Number(pt.prefill_time_ms) || 0).toFixed(2),
                         (Number(pt.prefill_speed) || 0).toFixed(2),
-                        outLen,
+                        getOutputLengthFor(pt.prompt_length),
                         (Number(pt.output_time_ms) || 0).toFixed(2),
                         (Number(pt.output_speed) || 0).toFixed(2),
                         (pt.successful || 0) + '/' + (pt.concurrency || cr.concurrency) + ' 并发成功',
@@ -5040,6 +5051,8 @@ const row = document.createElement('tr');
                 let firstPrompt = st.acc.firstPrompt;
                 st.networkLatencyMs = await collectNetworkLatencySample(latencySamples, apiUrl, 'openai', modelName, timeout);
                 const networkLatencyMs = st.networkLatencyMs;
+                const outLen = getOutputLengthFor(length);   // v2.1 浮动输出：decode 窗口随档位反比
+                st.outLen = outLen;
                 st.cells[6].textContent = repeatCount > 1
                     ? `${concurrency} ${translations[currentLang].msgConcurrentTesting} ${rep + 1}/${repeatCount}`
                     : `${concurrency} ${translations[currentLang].msgConcurrentTesting}`;
@@ -5062,7 +5075,7 @@ const measurementPromises = [];
                             { "role": "system", "content": DEFAULT_SYSTEM_PROMPT },
                             { "role": "user", "content": prompt }
                         ],
-                        "max_tokens": outputLength,
+                        "max_tokens": outLen,
                         "temperature": temperature,
                         "top_p": top_p,
                         "presence_penalty": presence_penalty,
@@ -6161,6 +6174,7 @@ try {
 
                 const requests = [];
                 let firstPrompt = ''; // 保存第一个请求的prompt用于详情展示
+                const outLen = getOutputLengthFor(length);   // v2.1 浮动输出
 
                 for (let i = 0; i < concurrency; i++) {
                     const generationPromptLength = getCalibratedGenerationPromptLength(length, promptCalibration);
@@ -6175,7 +6189,7 @@ try {
                             { "role": "user", "content": prompt }
                         ],
                         "options": {
-                            "num_predict": parseInt(outputLength, 10),
+                            "num_predict": outLen,
                             "num_ctx": parseInt(maxLength, 10), // Ollama 通常用 num_ctx 限制上下文
                             "temperature": parseFloat(temperature),
                             "top_p": parseFloat(top_p),
@@ -7294,6 +7308,7 @@ try {
                         maxLength: maxLength,
                         step: step,
                         outputLength: outputLength,
+                        outputSchedule: testLengths.map(L => L + ':' + getOutputLengthFor(L)).join(','),
                         concurrency: concurrency,
                         temperature: temperature,
                         topP: top_p,
@@ -8182,7 +8197,7 @@ ${_uploadBtn}
                         alert('这条记录是手动中止的测试，长度梯子没跑完，不能上传。');
                         return;
                     }
-                    if (rec.schema !== 2) { alert('这条记录来自旧版本客户端，缺少评级判定和并发数据，不能上传。请用当前版本重新跑一次评级测试。'); return; }
+                    if (rec.schema !== 3) { alert('这条记录来自旧版本客户端，缺少评级判定和并发数据，不能上传。请用当前版本重新跑一次评级测试。'); return; }
                     window._historyUploadRecord = rec;
                     // 还原这条历史记录的多并发明细 / 评级判定，上传时一并带上
                     window._concRuns = Array.isArray(rec.concRuns) ? JSON.parse(JSON.stringify(rec.concRuns)) : [];
@@ -9505,7 +9520,7 @@ function _parseRunCommand(cmd) {
                 }
                 const payload = {
                     user_code: userCode,
-                    schema_version: 2,
+                    schema_version: 3,
                     benchmark_version: BENCHMARK_VERSION,
                     corpus_hash: CORPUS_SHA256,
                     is_greedy: (parseFloat(document.getElementById('temperatureInput')?.value) === 0),
@@ -9602,7 +9617,7 @@ function _parseRunCommand(cmd) {
                         let okC = 0;
                         for (const cr of window._concRuns) {
                             const cp = {
-                                user_code: userCode, schema_version: 2, benchmark_version: BENCHMARK_VERSION, corpus_hash: CORPUS_SHA256,
+                                user_code: userCode, schema_version: 3, benchmark_version: BENCHMARK_VERSION, corpus_hash: CORPUS_SHA256,
                                 is_greedy: true, temperature: 0, top_p: 1, repeat_count: 1,
                                 nickname: nick || null, model_name: payload.model_name, hardware: hw,
                                 framework: fw || null, quantization: qt || null, notes: notes || null,
@@ -9640,7 +9655,7 @@ function _parseRunCommand(cmd) {
                 let ok = 0, fail = 0, lastErr = '';
                 let firstShareUrl = '';
                 for (const bd of _batchPayloads) {
-                    const payload = { user_code: userCode, schema_version: 2, nickname: nickname || null, model_name: modelName || bd.model || t.cloudUnknownModel || 'Unknown Model', hardware: hw, framework: fw || null, quantization: qt || null, notes: notes || bd.notes || null, concurrency: bd.concurrency, avg_prefill_speed: bd.avgPrefill ?? bd.maxPrefill, avg_decode_speed: bd.avgDecode ?? bd.maxDecode, max_prefill_speed: bd.maxPrefill, max_decode_speed: bd.maxDecode, source: 'web_pure', record_tags: bd.recordTags || ['source:web_pure'], results_json: JSON.stringify(bd.points) };
+                    const payload = { user_code: userCode, schema_version: 3, nickname: nickname || null, model_name: modelName || bd.model || t.cloudUnknownModel || 'Unknown Model', hardware: hw, framework: fw || null, quantization: qt || null, notes: notes || bd.notes || null, concurrency: bd.concurrency, avg_prefill_speed: bd.avgPrefill ?? bd.maxPrefill, avg_decode_speed: bd.avgDecode ?? bd.maxDecode, max_prefill_speed: bd.maxPrefill, max_decode_speed: bd.maxDecode, source: 'web_pure', record_tags: bd.recordTags || ['source:web_pure'], results_json: JSON.stringify(bd.points) };
                     if (runCommand) payload.run_command = runCommand;
                     try {
                         const r = await _sbInsert(payload);
