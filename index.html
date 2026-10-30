@@ -3772,12 +3772,12 @@ mood.
                         en: ['Personal assistant', '<b>3 runs averaged</b>, single concurrency, <b>≥128k</b> context required. Postable, certified after 5 retests. Grants 🥉 badge. Cap <b>128k</b>.']
                     },
                     dev: {
-                        zh: ['个人开发级测试', '每档 <b>3 次取平均</b>（单并发上下文 <b>≥256k</b>），加测 <b>3 并发</b>（上下文 <b>≥128k</b>，各长度 1 遍）达标；可上主榜，5 票复测后认证，通过发 🥈 徽章，封顶 <b>256k</b>。'],
-                        en: ['Personal dev', '<b>3 runs averaged</b> (single-stream context <b>≥256k</b>); plus <b>3-way concurrency</b> run from 512 up to <b>≥128k</b> (one pass per length) to qualify. Postable, certified after 5 retests. Grants 🥈 badge. Cap <b>256k</b>.']
+                        zh: ['个人开发级测试', '每档 <b>3 次取平均</b>（单并发上下文 <b>≥256k</b>），加测 <b>2 并发</b>（上下文 <b>≥128k</b>，各长度 1 遍）达标；可上主榜，5 票复测后认证，通过发 🥈 徽章，封顶 <b>256k</b>。'],
+                        en: ['Personal dev', '<b>3 runs averaged</b> (single-stream context <b>≥256k</b>); plus <b>2-way concurrency</b> run from 512 up to <b>≥128k</b> (one pass per length) to qualify. Postable, certified after 5 retests. Grants 🥈 badge. Cap <b>256k</b>.']
                     },
                     studio: {
-                        zh: ['工作室级测试', '每档 <b>3 次取平均</b>（单并发上下文 <b>≥256k</b>），加测 <b>8 并发</b>（上下文 <b>≥128k</b>，各长度 1 遍）达标；可上主榜，5 票复测后认证，通过发 🥇 徽章，封顶 <b>256k</b>，四档里最耗时。'],
-                        en: ['Studio', '<b>3 runs averaged</b> (single-stream context <b>≥256k</b>); plus <b>8-way concurrency</b> run from 512 up to <b>≥128k</b> (one pass per length) to qualify. Postable, certified after 5 retests. Grants 🥇 badge. Cap <b>256k</b>. Slowest of the four.']
+                        zh: ['工作室级测试', '每档 <b>3 次取平均</b>（单并发上下文 <b>≥256k</b>），加测 <b>5 并发</b>（上下文 <b>≥128k</b>，各长度 1 遍）达标；可上主榜，5 票复测后认证，通过发 🥇 徽章，封顶 <b>256k</b>，四档里最耗时。'],
+                        en: ['Studio', '<b>3 runs averaged</b> (single-stream context <b>≥256k</b>); plus <b>5-way concurrency</b> run from 512 up to <b>≥128k</b> (one pass per length) to qualify. Postable, certified after 5 retests. Grants 🥇 badge. Cap <b>256k</b>. Slowest of the four.']
                     }
                 };
         function renderModeTiles(){
@@ -4846,10 +4846,10 @@ mood.
         }
         const TIER_META = {
             assistant: { icon: '🥉', name: '个人助理级', req: '单并发 · 上下文 ≥128k' },
-            dev:       { icon: '🥈', name: '个人开发级', req: '单并发 ≥256k 且 3并发跑到 ≥128k' },
-            studio:    { icon: '🥇', name: '小工作室级', req: '单并发 ≥256k 且 8并发跑到 ≥128k' }
+            dev:       { icon: '🥈', name: '个人开发级', req: '单并发 ≥256k 且 2并发跑到 ≥128k' },
+            studio:    { icon: '🥇', name: '小工作室级', req: '单并发 ≥256k 且 5并发跑到 ≥128k' }
         };
-        // 多并发档（3/8 并发）成绩：与单并发共用同一张表的样式，靠标签页切换
+        // 多并发档（2/5 并发）成绩：与单并发共用同一张表的样式，靠标签页切换
         function _concTableAvailable() {
             return Array.isArray(window._concRuns) && window._concRuns.length > 0;
         }
@@ -4974,7 +4974,7 @@ mood.
             const p8t = info.probe8 === null ? '未测' : (info.probe8 ? '✅' : '❌');
             box.innerHTML = '<b style="background:linear-gradient(135deg,#22d3ee,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent;font-size:17px;">' + m.icon + ' ' + m.name + '</b>' +
                 '<div style="color:#8b949e;margin-top:6px;font-size:12px;">判定条件：' + m.req +
-                ' ｜ 最高通过长度 ' + info.max_success_tokens.toLocaleString() + ' tokens ｜ 3并发 ' + p3t + ' ｜ 8并发 ' + p8t + '</div>';
+                ' ｜ 最高通过长度 ' + info.max_success_tokens.toLocaleString() + ' tokens ｜ 2并发 ' + p3t + ' ｜ 5并发 ' + p8t + '</div>';
             try { renderConcurrencyResults(); } catch (e) { console.warn('render conc failed', e); }
         }
 
@@ -7248,8 +7248,8 @@ try {
                     window._concRuns = [];
                     console.warn('[tier] 测试被手动中止，跳过评级判定与并发档');
                 } else if (window._retestParent && window._retestTier && document.getElementById('retestTierProbe')?.checked && currentApiType === 'openai') {
-                    const n = window._retestTier === 'studio' ? 8 : 3;
-                    const needCtx = 131072; // 3/8 并发都只验到 128k
+                    const n = window._retestTier === 'studio' ? 5 : 2;   // 开发档探针=2并发，工作室档探针=5并发
+                    const needCtx = 131072; // 2/5 并发都只验到 128k
                     let pass = false;
                     try {
                         // 与正式评级同一条梯子：512 → 目标上下文，各长度只跑一遍
@@ -7264,7 +7264,7 @@ try {
                 }
                 const _retestProbed = !!(window._retestParent && window._retestTier && document.getElementById('retestTierProbe')?.checked);
                 if ((window._testMode === 'dev' || window._testMode === 'studio') && currentApiType === 'openai' && okRows.length > 0 && !_retestProbed) {
-                    const maxN = window._testMode === 'studio' ? 8 : 3;
+                    const maxN = window._testMode === 'studio' ? 5 : 2;
                     const setBtnProg = (cur) => {
                         const pre = translations[currentLang].msgTesting || '测试中';
                         startTestBtn.textContent = cur ? `${pre} 并发×${cur}` : `${pre} 并发×1-×${maxN}`;
@@ -7275,24 +7275,24 @@ try {
                     let p3 = null, p8 = null;
 
                     if (window._testMode === 'studio') {
-                        // 工作室级：只测 8 并发，512 → 128k，各长度 1 遍（不再测 3 并发，也不测 8 并发 256k）
+                        // 工作室级：只测 5 并发，512 → 128k，各长度 1 遍（5×128k ≈ 655k KV，四卡 24G 工作站画像）
                         if (maxSuccess >= 131072) {
-                            setBtnProg(8);
+                            setBtnProg(5);
                             const lens8 = okLens.filter(x => x <= 131072);
                             try {
-                                const r8 = await runConcurrencyLadder(apiUrl, currentModelName, lens8, 8, timeout, 1);
+                                const r8 = await runConcurrencyLadder(apiUrl, currentModelName, lens8, 5, timeout, 1);
                                 const reached8 = r8.points.length ? Math.max(...r8.points.map(x => x.prompt_length)) : 0;
                                 p8 = !r8.incomplete && r8.points.length === lens8.length && reached8 >= 131072;
 
                             } catch (e) { console.error('concurrency ladder n=8 failed', e); p8 = false; }
                         } else { p8 = false; }
                     } else {
-                        // 个人开发级：3 并发，512 → 128k，各长度 1 遍
+                        // 个人开发级：2 并发，512 → 128k，各长度 1 遍（2×128k ≈ 262k KV，双卡 24G 画像）
                         if (maxSuccess >= 131072) {
-                            setBtnProg(3);
+                            setBtnProg(2);
                             const lens3 = okLens.filter(x => x <= 131072);
                             try {
-                                const r3 = await runConcurrencyLadder(apiUrl, currentModelName, lens3, 3, timeout, 1);
+                                const r3 = await runConcurrencyLadder(apiUrl, currentModelName, lens3, 2, timeout, 1);
                                 const reached3 = r3.points.length ? Math.max(...r3.points.map(x => x.prompt_length)) : 0;
                                 p3 = !r3.incomplete && r3.points.length === lens3.length && reached3 >= 131072;
 
@@ -9056,7 +9056,7 @@ ${_uploadBtn}
                             if (p.tier === 'dev' || p.tier === 'studio') {
                                 rrb.style.display = 'block';
                                 const lbl = document.getElementById('tierProbeLabel');
-                                if (lbl) lbl.textContent = p.tier === 'studio' ? '需通过 8 并发' : '需通过 3 并发';
+                                if (lbl) lbl.textContent = p.tier === 'studio' ? '需通过 5 并发' : '需通过 2 并发';
                                 window._retestTier = p.tier;
                             } else { rrb.style.display = 'none'; window._retestTier = null; }
                         }
@@ -9612,7 +9612,7 @@ function _parseRunCommand(cmd) {
                     payload.concurrency = 1;
                     payload.vote_pass = window._retestVote;
                     if (window._retestProbe) {
-                        if (window._retestProbe.n === 3) payload.probe3_pass = window._retestProbe.pass;
+                        if (window._retestProbe.n === 2) payload.probe3_pass = window._retestProbe.pass;
                         else payload.probe8_pass = window._retestProbe.pass;
                     }
                 }
