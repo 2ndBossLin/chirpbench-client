@@ -94,7 +94,7 @@ Removing or weakening either one makes the numbers invalid: they stop measuring 
 
 - Each context length is repeated multiple times (3 passes for rated tiers); **the median of a single pass is reported**, not the sum of passes
 - Prompt-processing speed prefers the server-reported `timings.prompt_ms`; when absent, client time-to-first-byte is used with a sampled network latency subtracted
-- Output length **scales inversely with the context tier** (v2.1): 2048 tokens at 512/1024, 1536 at 2048/4096, 1024 at 8192/16384, 768 at 32768, 512 at 65536+. With `temperature 0` and a fixed corpus, numbers stay comparable across machines
+- Output length **floats per tier with a 1024-token floor** (v2.1): 2048 at 512/1024, 1536 at 2048/4096, 1024 at 8192+. With `temperature 0` and a fixed corpus, numbers stay comparable across machines
 - Points where the server reports queueing (`queue > 200ms`) are discarded rather than counted as prefill
 
 ## What gets uploaded

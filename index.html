@@ -3017,9 +3017,7 @@ mood.
             const L = Number(length) || 0;
             if (L <= 1024) return 2048;
             if (L <= 4096) return 1536;
-            if (L <= 16384) return 1024;
-            if (L <= 32768) return 768;
-            return 512;
+            return 1024;   // 8192 及以上统一 1024：长档 decode 慢，窗口再长每遍也只多十几秒，别为省时间牺牲最关键的档位
         }
 
         function getCalibratedGenerationPromptLength(length, calibration) {
