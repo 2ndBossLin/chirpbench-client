@@ -4788,6 +4788,13 @@ mood.
             // full v2 ladder at concurrency n; reps 遍（评级用 1 遍，多并发成绩可传 3）; returns points[]
             const apiKeyVal = (document.getElementById('apiKey') || {}).value || '';
             const points = [];
+            // 实时进度：开跑即注册并发表并自动切到对应标签页，每完成一档刷新一次
+            const liveRun = { concurrency: n, points: points, incomplete: true, finished: false, lengths: Array.from(lengths) };
+            if (Array.isArray(window._concRuns)) {
+                window._concRuns.push(liveRun);
+                window._resultTabIdx = window._concRuns.length;
+                renderConcurrencyResults();
+            }
             for (const length of lengths) {
                 const outLen = getOutputLengthFor(length);
                 if (!isTestingRunning) break;
@@ -4812,7 +4819,7 @@ mood.
                         return executeAndMeasureRequest(apiUrl, opts, timeout, length, length, 0, 0);
                     }));
                     const ok = rs.filter(r => r.status === 'fulfilled').map(r => r.value);
-                    if (ok.length < n) return { points, incomplete: true, failed_length: length };
+                    if (ok.length < n) { liveRun.incomplete = true; liveRun.finished = true; renderConcurrencyResults(); return { points, incomplete: true, failed_length: length }; }
                     batch.push(calculateAggregateThroughputMetrics(ok));
                 }
                 const sum = (k) => batch.reduce((a, m) => a + (m[k] || 0), 0);
@@ -4824,7 +4831,11 @@ mood.
                     prefill_time_ms: pMs, output_time_ms: dMs,
                     concurrency: n, successful: n
                 });
+                renderConcurrencyResults();
             }
+            liveRun.incomplete = false;
+            liveRun.finished = true;
+            renderConcurrencyResults();
             return { points, incomplete: false };
         }
         function computeTier(maxSuccessTokens, p3, p8) {
@@ -4844,6 +4855,7 @@ mood.
         }
 
         function switchResultTab(idx) {
+            window._resultTabIdx = idx;
             const resultsDiv = document.getElementById('results');
             if (!resultsDiv) return;
             const mainTable = document.getElementById('mainResultTable');
@@ -4891,8 +4903,22 @@ mood.
                 thead.appendChild(hr);
                 table.appendChild(thead);
 
-                (cr.points || []).forEach(function (pt) {
+                const _lens = Array.isArray(cr.lengths) ? cr.lengths : (cr.points || []).map(function (p) { return p.prompt_length; });
+                _lens.forEach(function (_len) {
+                    const pt = (cr.points || []).find(function (p) { return p.prompt_length === _len; });
                     const tr = document.createElement('tr');
+                    if (!pt) {
+                        const td0 = document.createElement('td'); td0.textContent = (_len || 0).toLocaleString();
+                        tr.appendChild(td0);
+                        for (let k = 1; k < 8; k++) {
+                            const td = document.createElement('td');
+                            td.textContent = k === 3 ? String(getOutputLengthFor(_len)) : (cr.finished ? '—' : (translations[currentLang].msgTesting || '测试中'));
+                            td.style.color = '#8b949e';
+                            tr.appendChild(td);
+                        }
+                        tbody.appendChild(tr);
+                        return;
+                    }
                     const cells = [
                         (pt.prompt_length || 0).toLocaleString(),
                         (Number(pt.prefill_time_ms) || 0).toFixed(2),
@@ -4926,7 +4952,7 @@ mood.
                     tabs.appendChild(b);
                 });
                 tabs.style.display = 'flex';
-                switchResultTab(0);
+                switchResultTab(Math.min(window._resultTabIdx || 0, labels.length - 1));
             }
         }
 
@@ -7257,7 +7283,7 @@ try {
                                 const r8 = await runConcurrencyLadder(apiUrl, currentModelName, lens8, 8, timeout, 1);
                                 const reached8 = r8.points.length ? Math.max(...r8.points.map(x => x.prompt_length)) : 0;
                                 p8 = !r8.incomplete && r8.points.length === lens8.length && reached8 >= 131072;
-                                if (r8.points.length > 0) window._concRuns.push({ concurrency: 8, points: r8.points, incomplete: r8.incomplete });
+
                             } catch (e) { console.error('concurrency ladder n=8 failed', e); p8 = false; }
                         } else { p8 = false; }
                     } else {
@@ -7269,7 +7295,7 @@ try {
                                 const r3 = await runConcurrencyLadder(apiUrl, currentModelName, lens3, 3, timeout, 1);
                                 const reached3 = r3.points.length ? Math.max(...r3.points.map(x => x.prompt_length)) : 0;
                                 p3 = !r3.incomplete && r3.points.length === lens3.length && reached3 >= 131072;
-                                if (r3.points.length > 0) window._concRuns.push({ concurrency: 3, points: r3.points, incomplete: r3.incomplete });
+
                             } catch (e) { console.error('concurrency ladder n=3 failed', e); p3 = false; }
                         } else { p3 = false; }
                     }
