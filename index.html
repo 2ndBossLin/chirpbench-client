@@ -2352,587 +2352,529 @@
         const DEFAULT_SYSTEM_PROMPT = 'You are a helpful assistant.';
         const DEFAULT_BENCHMARK_SUFFIX = '\nBased on the words above, write a short philosophical essay discussing the meaning of existence, the nature of consciousness, and humanity\'s place in the universe. Use clear, coherent sentences.';
 
-        // ===== Benchmark corpus v2.0 (2026-10-19): deterministic prompts =====
-        // Synthetic technical corpus (AI-authored, no pretraining contamination).
-        // Byte-identical for every user/time. Mirrors python/benchmark_corpus/corpus_v2.txt
-        // and python/benchmark_v2.py. v1 word-bag is retired for benchmark uploads.
-        const BENCHMARK_VERSION = 'v2.1';
-        const CORPUS_SHA256 = '661a93cb12e367b29a7c6a2133cea64cae5b927c86a0e81264de74fd6313de46';
+        // ===== Benchmark corpus v3.0 (2026-11-01): deterministic mixed-domain prompts =====
+        // Mixed corpus: ~50% code, ~25% math, ~25% prose (SPEED-Bench domain-mixing idea,
+        // made certifiable: byte-identical, single fixed prompt per tier. Mirrors python/benchmark_corpus/corpus_v3.txt
+        // and python/benchmark_v2.py. v1/v2 corpora are retired for benchmark uploads.
+        const BENCHMARK_VERSION = 'v3.0';
+        const CORPUS_SHA256 = 'adfbb377391fa1a9cd5330d77fe20a6d5838d8510d00cc83dc02d25a2d4db2d8';
         const DECODE_TASK_SUFFIX = `
-Based on the technical text above, write a detailed summary of the key engineering trade-offs it describes. Use clear, coherent sentences and cover each section.`;
-        const BENCHMARK_CORPUS_V2 = `# Deterministic Benchmark Corpus v2.0
-# Synthetic technical reference text. Written for benchmarking purposes.
-# Not derived from any published work; safe from pretraining contamination.
-
-## Section A: Transport Protocol Design Notes
-
-A transport protocol exists to move bytes between two endpoints across a network
-that makes no promises. The designers of every serious transport layer face the
-same three questions: how do we know a segment arrived, how do we know the
-receiver can still absorb more data, and how do we share bandwidth fairly with
-other flows that crossed our path. The classical answers involve sequence
-numbers, sliding windows, and congestion controllers, but the interesting
-engineering lives in the interactions between them.
-
-Consider a sender that maintains a congestion window measured in bytes rather
-than packets. The window grows during slow start, doubles each round trip until
-a loss event or an explicit congestion notification marks the path as loaded.
-At that point the sender multiplies the window by a factor determined by its
-algorithm: Reno halves it, Cubic follows a cubic function of elapsed time since
-the loss, and BBR ignores loss entirely and instead probes for the bandwidth
-delay product of the path. Each choice encodes a different theory about what
-packet loss actually means. Reno assumes loss signals queue overflow. BBR
-assumes loss is random noise on wireless links and that queues themselves are
-harmful. These theories produce wildly different behavior on a shallow buffered
-switch versus a deep buffered one, which is why benchmarking a transport stack
-without describing the buffer sizes of the intervening hardware is meaningless.
-
-The receive window is a separate mechanism that protects the receiver, not the
-path. A receiver advertises how much buffer space it has available, and the
-sender must never keep more unacknowledged bytes in flight than the minimum of
-the congestion window and the receive window. When an application reads slowly,
-the receive window collapses, the sender stalls, and the congestion window
-begins to look idle even though the network is healthy. Monitoring tools that
-report only throughput miss this distinction entirely. A stalled transfer and a
-congestion limited transfer look identical in a bandwidth graph but require
-completely different fixes.
-
-Round trip time estimation deserves more care than it usually receives. The
-sender keeps a smoothed round trip time using an exponential weighted moving
-average, plus a variance term that feeds the retransmission timeout. If the
-variance term is too small, a single delayed acknowledgment triggers a spurious
-retransmission, which the congestion controller interprets as loss, which
-collapses the window for no reason. If the variance term is too large, genuine
-losses wait seconds before recovery. Modern stacks clamp the minimum timeout to
-one or two round trips measured on the local link, but the tuning constants are
-empirical and differ across operating systems, which is one more reason network
-benchmarks must state the kernel version they were measured on.
-
-## Section B: Concurrency Models in Server Software
-
-Server software has cycled through several concurrency models in the past two
-decades, and each cycle was driven by the cost of a thread. An operating system
-thread costs roughly eight kilobytes of stack by default, plus kernel scheduling
-overhead when the count grows into the tens of thousands. A model that allocates
-one thread per connection therefore stops scaling somewhere around ten thousand
-simultaneous clients, which is the famous C10K problem.
-
-The first answer was event loops with nonblocking file descriptors. A single
-thread polls a readiness notification facility, epoll on Linux or kqueue on the
-BSDs, and dispatches callbacks when descriptors become readable or writable.
-This scales beautifully for input bound workloads but punishes any blocking
-operation. A single database call inside a callback parks the entire loop, and
-every handler must be split into a state machine or a chain of continuations.
-The code becomes correct but unreadable, and unreadable concurrent code is
-concurrent code with bugs.
-
-The second answer was user space scheduling of lightweight tasks. Coroutines,
-green threads, and async await syntax all share the same idea: the programmer
-writes sequential code, the compiler or runtime rewrites it into a state
-machine, and a scheduler multiplexes thousands of these state machines onto a
-pool of operating system threads. The blocking call survives syntactically but
-becomes a suspension point under the hood. This model dominates modern server
-development, but it hides a subtle hazard. If the runtime cannot intercept a
-blocking call, for example a synchronous disk read from a legacy library, that
-call occupies a scheduler thread. A pool of four threads with four accidental
-blocking calls freezes every coroutine in the process. Profiling tools that
-report CPU utilization will show an idle machine while latency soars, because
-the threads are waiting, not computing.
-
-Shared memory concurrency remains the fastest option when it is safe, and the
-question of safety is the expensive part. Data races are undefined behavior in
-most compiled languages, and the hardware does not oblige you by failing loudly.
-A race on a counter may lose an increment silently. A race on a pointer may
-produce a torn read that points into unmapped memory. The tools that catch
-these bugs, thread sanitizers and lock order checkers, require the program to
-be run under instrumentation, and coverage of concurrent interleavings is
-fundamentally incomplete because the number of interleavings grows
-combinatorially with the number of synchronization points.
-
-Message passing avoids shared mutable state by transferring ownership of data
-between tasks. Channels serialize access implicitly: whoever holds the message
-owns the data, and no other task can touch it. The cost is allocation and
-copying, which for large payloads can dominate the cost of a carefully placed
-mutex. The practical guidance that has survived every language generation is
-narrow: share as little as possible, make the shared parts immutable, and when
-mutation is unavoidable, protect it with a lock held for the shortest possible
-duration and always acquired in a documented global order.
-
-## Section C: Storage Engine Internals
-
-A storage engine answers one question under contradictory constraints: how do
-we make durable writes fast? Durability means the data survives a power
-failure, which means the bits must reach stable media, which means a device
-round trip measured in microseconds at best. Speed means the write must return
-in nanoseconds. The entire design space of storage engines is the set of tricks
-used to reconcile those two numbers.
-
-The write ahead log is the foundational trick. Before modifying any page in the
-buffer pool, the engine appends a compact description of the change to a log
-that lives on stable storage. The log is append only, so the device sees
-sequential writes, which even spinning disks handle well. Once the log record
-is durable, the transaction can commit, and the modified page can be flushed
-lazily. Recovery then becomes a replay problem: scan the log forward, redo the
-changes that were committed but not yet reflected in pages, and undo the
-changes made by transactions that never committed. The log is the database;
-the pages are a cache of it.
-
-B tree pages and log structured merge trees represent two opposite answers to
-the question of where writes land. A B tree updates data in place, which makes
-reads cheap, point lookups traverse a shallow tree of three or four levels even
-for gigabytes of data, but every update dirties a page that must eventually be
-written back, and the writes scatter across the file. An LSM tree buffers
-writes in a mutable in memory table, flushes immutable sorted runs to disk, and
-compacts runs in the background. Writes are sequential and batched, which is
-ideal for solid state media, but reads may consult many levels of runs, and
-compaction consumes bandwidth and amplifies writes by a factor that grows with
-the number of levels. Every LSM based engine ships knobs trading read
-amplification against write amplification, and the benchmark numbers are
-meaningless without stating where those knobs sit.
-
-The buffer pool is where memory pressure meets query latency. A least recently
-used policy sounds simple but thrashes under full table scans, because a scan
-evicts the working set of every other query. Production engines use variants:
-clock sweeps with reference bits, most recently used protection that pins the
-hot tail of the LRU list, or mid point insertion that sends scan pages into the
-cold half of the list. The size of the pool relative to the working set is the
-single most important configuration number in any database benchmark. A
-benchmark that reports throughput without reporting whether the dataset fit in
-memory is reporting a storage device, not a database.
-
-Checkpoints bound recovery time. Without checkpoints, recovery must replay the
-entire log since the beginning of time. A checkpoint marks a point where all
-dirty pages up to some log sequence number are known to be on disk, so recovery
-starts there. Fuzzy checkpoints allow writes to continue during the flush, at
-the cost of more complex bookkeeping. The checkpoint interval is a direct trade
-between steady state write bandwidth and crash recovery latency, and a
-benchmark that never crashes never measures that trade.
-
-## Section D: Cache Coherence and Memory Ordering
-
-A modern processor core has private caches at two or three levels, and the
-cores in a socket share coherence hardware that keeps those caches consistent
-without software involvement. The classic protocol is MESI: each cache line is
-in one of four states, modified, exclusive, shared, or invalid. A core that
-wants to write a line must obtain exclusive ownership, which invalidates copies
-in every other cache. The invalidation travels over an interconnect, and the
-round trip is measured in tens of nanoseconds, which is hundreds of core cycles
-at current frequencies.
-
-False sharing is the most common performance bug that coherence hardware
-exposes. Two threads update two unrelated variables that happen to live in the
-same sixty four byte cache line. Each write invalidates the other core's copy,
-and the line ping pongs across the interconnect. The program is correct, the
-algorithm is optimal, and the benchmark shows a four fold slowdown versus the
-same code with padding between the variables. Profilers that count cache
-coherence traffic are the only way to see it, because instruction level
-profilers show nothing unusual.
-
-Memory ordering is the second half of the story. Compilers and processors
-reorder memory operations aggressively, and the hardware guarantees only a
-partial order. On x86, loads are not reordered with other loads, and stores are
-not reordered with earlier loads, but stores may be reordered with other
-stores. On ARM and RISC V, almost anything may move. A lock release must be
-visible before the data it protects, which requires a release fence; a lock
-acquire must see all data released by the previous holder, which requires an
-acquire fence. Getting these backwards produces bugs that appear once in a
-million runs on a development machine and once in a thousand runs on a
-production server with different core counts and different cache sizes.
-
-The practical consequence for benchmarking is that microbenchmarks of atomic
-operations measure the coherence protocol, not the algorithm. An atomic fetch
-and add on an uncontended line costs a few nanoseconds. The same instruction
-contended by sixteen cores costs hundreds, because the line must migrate. A
-benchmark that reports atomic throughput without reporting contention level is
-reporting noise.
-
-## Section E: Compiler Pipeline and Optimization
-
-A compiler transforms source code into machine code through a pipeline of
-analysis and transformation stages. The front end parses source into an
-abstract syntax tree, then lowers it to an intermediate representation that
-drops syntax and keeps semantics. The middle end optimizes the intermediate
-representation: inlining, constant propagation, dead code elimination, loop
-invariant motion, strength reduction, vectorization. The back end selects
-machine instructions, allocates registers, and schedules operations.
-
-Inlining is the transformation that changes everything else. A function call
-is a barrier: the optimizer cannot see across it, cannot hoist work across it,
-cannot specialize on its arguments. Inlining removes the barrier and enables
-constant folding, branch elimination, and register allocation across the
-boundary. But inlining grows code, which pressures the instruction cache and
-the branch predictor, both of which are finite resources measured in kilobytes.
-An aggressively inlined binary can run slower than a conservative one on
-workloads with large code footprints, and the crossover point is workload
-specific. This is why compiler flags belong in every benchmark report: the
-same source under different inlining thresholds is a different program.
-
-Register allocation is graph coloring in textbooks and heuristics in
-production. The allocator builds an interference graph whose nodes are live
-values and whose edges mean two values are live at the same time. Coloring the
-graph with the number of physical registers assigns values to registers; values
-that cannot be colored spill to memory. Spills in a hot loop are the single
-most visible compiler failure in a benchmark, and they are also the most
-common, because live value counts in real code routinely exceed register file
-sizes. Reading the assembly for a hot loop, looking for store and load
-instructions that the source does not justify, is a five minute diagnostic that
-catches what no profiler attribute can name.
-
-Vectorization turns scalar loops into single instruction multiple data
-operations. The compiler must prove that iterations do not depend on each other
-in ways that prevent parallel execution, that memory accesses do not alias, and
-that the trip count justifies the prologue and epilogue overhead. Proving
-non aliasing is the hard part; production compilers emit runtime alias checks
-that branch into vector and scalar versions of the loop. A benchmark that
-measures a loop the compiler failed to vectorize is measuring the scalar path,
-and the only way to know which path ran is to read the generated code.
-
-## Section F: Benchmark Methodology Notes
-
-A benchmark is an experiment, and an experiment without a stated protocol is
-anecdote. The protocol must fix the input, fix the environment, fix the
-measurement, and state the repetitions. Fixing the input means the exact bytes
-processed, not a description of them. Two runs of the same program on the same
-machine with different input distributions can differ by more than the
-difference the benchmark is trying to detect, especially when the program
-contains adaptive components such as speculative execution, compression, or
-learned indexes.
-
-Fixing the environment means hardware model, clock speed, thermal state,
-memory configuration, operating system version, and the set of other processes
-running. A laptop benchmark throttles after ninety seconds of sustained load,
-so a benchmark that reports the first thirty seconds and a benchmark that
-reports the first three hundred seconds measure different machines. Fixing the
-measurement means which clock is read, whether the clock is monotonic, whether
-the timer includes process startup, and whether warmup iterations are excluded.
-A just in time compiled runtime needs warmup because the first execution runs
-interpreted bytecode; a graphics workload needs warmup because the first
-execution compiles shaders; a database needs warmup because the first
-execution fills the buffer pool.
-
-Repetitions exist because of variance, and variance must be reported, not
-hidden. A single number with no spread is unreportable. The minimum useful
-summary is a median and a spread measure, and the spread should come from
-independent runs, not from samples within one run, because within run samples
-share the same systematic errors. Independent runs reshuffle page placement,
-re randomize address space layout, and re draw scheduler decisions. When the
-spread across independent runs exceeds the difference between two systems being
-compared, the comparison is inconclusive, and the honest report says so.
-
-Statistical testing for benchmarks is simple and underused. Run both systems
-alternately, at least ten times each, compare medians, and report whether the
-confidence intervals overlap. Alternating order controls drift in the
-environment over time. If the machine is warming up, alternating spreads the
-warming evenly across both systems instead of loading it onto whichever ran
-second. This single habit eliminates more false conclusions than any amount of
-additional precision in a single run.
-## Section G: Numerical Reproducibility in Floating Point
-
-Floating point arithmetic is not associative, and this single fact breaks the
-reproducibility of every numerical program that has ever been written without
-care. The IEEE seventy five four standard defines addition, multiplication, and
-the other basic operations as correctly rounded: the result is the nearest
-representable value to the exact mathematical answer, with ties broken by
-rounding to even. That guarantee is per operation. It says nothing about
-sequences of operations, and the reason is that rounding error accumulates
-differently depending on the order in which terms are combined.
-
-Sum an array of a million floating point numbers left to right and the partial
-sum grows large while the terms being added stay small. Once the partial sum
-exceeds the terms by more than the mantissa width, further additions contribute
-nothing at all: the small terms are absorbed. Sum the same array right to left
-and the partial sums stay small until the end, absorbing far less. The two
-answers differ, and both are correct under the standard. Pairwise summation,
-which splits the array recursively and adds the halves, reduces the error bound
-from linear in the count to logarithmic, and it is the default strategy in
-several serious numerical libraries precisely because it parallelizes.
-
-Parallel reduction is where reproducibility dies in practice. A parallel sum
-over a large array assigns chunks to threads, sums each chunk, and combines the
-partial results. The combination order depends on thread scheduling, which
-depends on system load, which changes run to run. The result is a program that
-produces different bits on different runs with identical input. For a
-simulation whose output feeds a decision, that is unacceptable, and the fix is
-expensive: fix the reduction tree explicitly, which constrains the parallel
-decomposition, or accept nondeterminism and document the tolerance.
-
-Graphics and machine learning inference have the same problem with higher
-stakes. A matrix multiplication on a graphics processor splits the dot product
-across processing elements, and the split depends on the tile size chosen by
-the kernel, which depends on the matrix shape and the occupancy heuristics of
-the library. Change the shape slightly and the kernel changes and the rounding
-changes. This is why the same model on the same hardware can produce different
-outputs across library versions, and why inference benchmarks that claim bit
-identical reproducibility across framework versions are usually measuring a
-case that happens to select the same kernel.
-
-Quantized inference adds a second layer of divergence. A model trained in
-higher precision and stored in eight bit integer weights is evaluated by a
-kernel that accumulates in wider integer arithmetic and requantizes at the end.
-The requantization rounding mode, the handling of the accumulator clamp, and
-whether the bias is added before or after scaling are all implementation
-choices that change outputs. Two engines running the same quantized checkpoint
-can disagree on the argmax of a logits vector when the top two values are close,
-which for a language model means a different token, which cascades into a
-completely different continuation. A benchmark that measures generation speed
-must therefore also record whether the generated sequence matched, because a
-faster engine that generated different text is not faster at the same task.
-
-## Section H: Profiling, Sampling, and Measurement Artifacts
-
-A sampling profiler interrupts the program at fixed intervals and records the
-instruction pointer and call stack. The overhead is one interrupt per interval,
-so the interval controls the tradeoff between resolution and perturbation. An
-interval of one millisecond on a program whose interesting events happen every
-fifty microseconds will miss most of them. An interval of fifty microseconds
-perturbs the cache and branch predictor state enough to change the program's
-behavior. The profiler is part of the system being measured, and pretending
-otherwise is the most common methodological error in performance work.
-
-The observer effect is worse than overhead alone. Interrupts flush pipelines,
-pollute caches, and can change which core a thread runs on. Hardware
-performance counters are worse still: many processors support only a handful of
-counters simultaneously, so measuring more events than fit requires
-multiplexing, which estimates the missing counters by scaling partial counts.
-Multiplexed counter numbers are estimates with error bars that tools rarely
-print.
-
-Instrumentation, in which the compiler inserts timing or counting code, gives
-exact counts but changes the code being measured. A function call instrumented
-with two clock reads may double in duration, and the inliner may refuse to
-inline it, which changes everything downstream. The correct use of
-instrumentation is to establish call counts and relative structure, then use
-sampling to attribute time, then use targeted manual timing only where the
-first two agree that a specific region matters.
-
-The clock itself matters. A wall clock that includes time the process was not
-scheduled overstates cost on a loaded machine. A monotonic clock avoids
-adjustments from the system time daemon but still measures wall time. A thread
-CPU clock measures only scheduled execution, which is the right measure for
-algorithmic cost and the wrong measure for user perceived latency. Reporting
-throughput measured on a thread CPU clock while latency is measured on a wall
-clock mixes two different quantities in one table, which is a common and
-confusing error in published benchmark suites.
-
-Cache warming and branch predictor warming are the reason warmup iterations
-exist. A cold branch predictor mispredicts at rates that a warm predictor never
-reaches, and mispredicts cost fifteen to twenty cycles each on modern cores. A
-loop that runs for ten thousand iterations spends a measurable fraction of its
-life training the predictor. Discard the first iterations, and state how many
-were discarded, because the discarded count is itself a tuning parameter that
-affects the reported number.
-
-Frequency scaling is the largest single source of inconsistency in published
-numbers. A modern core boosts above its base clock when few cores are active
-and thermal headroom exists, and drops below base clock under sustained all
-core load. A benchmark that runs for three seconds measures boost clocks. The
-same benchmark running for three minutes measures sustained clocks. The two
-numbers can differ by thirty percent on the same silicon. Serious suites pin
-the frequency, or report the observed frequency alongside the result, or both.
-A number without a frequency attached is not a measurement of a processor; it
-is a measurement of a moment.
-
-## Section I: Input Sizing and Distribution Effects
-
-The shape of the input changes what a program does, not merely how much of it
-it does. A hash table with a load factor below three quarters behaves
-differently from one above that threshold, because the probe sequence length
-grows nonlinearly as the table fills. A benchmark that inserts one million
-items into a table sized for four million and a benchmark that inserts one
-million into a table sized for one point one million measure different
-programs, and the difference can exceed the difference between two hash
-functions.
-
-Allocation patterns interact with the memory allocator in ways that dominate
-small object workloads. A general purpose allocator serves small requests from
-thread local arenas, which are fast, and refills arenas from the operating
-system, which is slow. A workload that allocates and frees in a nested pattern
-reuses arena memory with excellent locality. A workload that allocates in one
-phase and frees in another grows the arena set, fragments it, and eventually
-calls into the operating system for more address space. The same source code
-under two different lifetimes has different allocation costs, and the
-allocator's tuning parameters, arena size and trim thresholds, change the
-numbers further.
-
-Data layout determines whether a loop vectorizes and whether it hits cache. An
-array of structures with twelve fields each touches one hundred and ninety two
-bytes per element to read three fields, wasting most of every cache line it
-pulls in. A structure of arrays with the same fields touches exactly the bytes
-needed. The two layouts can differ by a factor of four in memory bound loops,
-and the difference is invisible to a profiler that reports only cache miss
-counts without reporting bytes moved.
-
-Distribution shape matters for anything adaptive. A compression benchmark on
-text with a Zipfian frequency distribution produces different results from one
-on uniform random bytes, and the difference is not a constant offset: the
-adaptive components respond differently. A sort benchmark on nearly sorted
-input measures a different algorithm path than the same sort on random input.
-A cache benchmark on a working set that fits in level two measures level two,
-and one on a working set that exceeds last level cache measures memory. Every
-one of these is a legitimate benchmark, and every one must state which regime
-it measured.
-
-The practical rule for a public benchmark suite is to fix the distribution
-explicitly and publish the generator. Not a description of the generator, not a
-seed with a reference to code that may change, but the exact bytes or the exact
-hash of the exact bytes. Then a result can be compared across time and
-machines, because the input is a constant of the experiment rather than a
-variable that readers must reconstruct.
-
-## Section J: Reporting Standards for Public Benchmarks
-
-A benchmark result that cannot be reproduced is not a result. Reproducibility
-requires the input, the environment, the software versions, the measurement
-procedure, and the repetition count. Missing any one of those five makes the
-number decorative.
-
-The input requirement means exact bytes or a cryptographic hash of them, plus
-the size in the unit the program actually processes. For a text pipeline, the
-unit that matters is the token count under the specific tokenizer the program
-uses, not the character count and not the byte count. Two tokenizers can differ
-by twenty percent on the same text, and a speed measured in tokens per second
-under one tokenizer is not comparable to a speed measured under another.
-Publish the tokenizer identity and the measured token count, not the nominal
-length requested.
-
-The environment requirement means hardware model, core count, clock speed
-observed during the run, memory size and speed, storage device model, operating
-system and kernel version, and the list of other significant processes. For
-accelerated workloads add the driver version and the firmware version, because
-both change performance materially and both update silently.
-
-The software requirement means version strings for everything in the call
-chain, including the runtime, the math libraries, and the allocator. A change
-in a math library's kernel selection heuristic can move a matrix multiply
-benchmark by a factor of two with no change to the application source.
-
-The procedure requirement means warmup policy, measurement clock, what is
-included in the timed region, and how concurrency was arranged. A throughput
-number measured at concurrency one and a throughput number measured at
-concurrency sixty four are different measurements of the same system, and a
-leaderboard that mixes them without a column for concurrency is not a
-leaderboard, it is a lottery.
-
-The repetition requirement means the count of independent runs, the median, and
-a spread. Report the median rather than the mean, because a single pathological
-run distorts a mean and barely moves a median. Report the spread as an interval
-or as minimum and maximum, and state whether the runs were interleaved. When
-comparing two systems, state whether the intervals overlap, because that is
-the honest answer to whether the difference is real.
-
-A final discipline: publish the failures. A benchmark suite that reports only
-the configuration where a system won is marketing. A suite that reports the
-configurations where it lost, and the configurations where the result was
-inconclusive, is engineering. The credibility of a public benchmarking project
-rests almost entirely on this discipline, and almost nothing on the precision
-of its numbers.
-## Section K: Worked Code Examples
-
-The following examples accompany the methodology notes above. They are
-intentionally short and self contained.
-
-Example one: a pairwise summation that bounds rounding error growth.
-
-    def pairwise_sum(values):
-        n = len(values)
-        if n < 8:
-            acc = 0.0
-            for v in values:
-                acc += v
-            return acc
-        half = n // 2
-        return pairwise_sum(values[:half]) + pairwise_sum(values[half:])
-
-The base case threshold of eight is a tuning constant. Smaller thresholds
-increase recursion overhead; larger thresholds let the linear error growth
-resume inside each block. A benchmark of this function must state the
-threshold, the input distribution, and the summation order, because all three
-change the measured result.
-
-Example two: a ring buffer sized as a power of two, avoiding the modulo
-instruction in the hot path.
-
-    class Ring:
-        def __init__(self, capacity_pow2):
-            self.mask = capacity_pow2 - 1
-            self.buf = [None] * capacity_pow2
-            self.head = 0
-            self.tail = 0
-
-        def push(self, item):
-            self.buf[self.head] = item
-            self.head = (self.head + 1) & self.mask
-
-        def pop(self):
-            if self.head == self.tail:
-                raise IndexError("empty")
-            item = self.buf[self.tail]
-            self.buf[self.tail] = None
-            self.tail = (self.tail + 1) & self.mask
-            return item
-
-The masking trick replaces division with a bitwise and. The performance
-difference is real but small on modern hardware that pipelines division well;
-the correctness hazard is larger. If capacity is not a power of two, the mask
-is wrong and the buffer silently corrupts. A benchmark suite that includes this
-structure should assert the power of two property at construction, because a
-corrupted ring buffer produces a fast but wrong benchmark.
-
-Example three: a bounded work queue with backpressure, the shape that appears
-in every pipeline benchmark.
-
-    from collections import deque
-
-    class BoundedQueue:
-        def __init__(self, limit):
-            self.limit = limit
-            self.items = deque()
-
-        def put(self, item):
-            if len(self.items) >= self.limit:
-                return False
-            self.items.append(item)
-            return True
-
-        def get(self):
-            if not self.items:
-                return None
-            return self.items.popleft()
-
-The queue limit is a benchmark parameter with a U shaped effect. A limit of one
-serializes the pipeline stages completely. A limit of zero, if the pipeline
-logic allows it, deadlocks. A very large limit lets the first stage run ahead,
-so the benchmark measures memory bandwidth and allocator behavior rather than
-stage throughput. The published limit must match the published result.
-
-Example four: measuring a stage without the timer itself dominating.
-
-    import time
-
-    def timed(fn, iterations, warmup=5):
-        for _ in range(warmup):
-            fn()
-        best = float("inf")
-        samples = []
-        for _ in range(iterations):
-            t0 = time.perf_counter_ns()
-            fn()
-            samples.append(time.perf_counter_ns() - t0)
-        samples.sort()
-        return samples[len(samples) // 2], samples[0], samples[-1]
-
-Returning median, minimum, and maximum together is deliberate. The minimum
-approximates the cost with a perfect cache and a warm predictor. The maximum
-exposes interference. The median is the number to publish. A single sample
-returns none of this information, and a mean hides the tail.
-
-These four examples share one property worth naming explicitly: each contains
-a tuning constant that changes the measured quantity. The base case threshold,
-the capacity power, the queue limit, the warmup count. A benchmark report that
-omits tuning constants has not described an experiment; it has described a
-mood.
+Based on the material above, continue with a detailed technical explanation: walk
+through the code line by line, redo the mathematical derivations in your own words,
+and state the engineering trade-offs each section describes.`;
+        const BENCHMARK_CORPUS_V3 = `# Deterministic Benchmark Corpus v3.0
+# Synthetic mixed-domain reference text: code, mathematics, and engineering prose.
+# Written for benchmarking purposes. Not derived from any published work;
+# safe from pretraining contamination. Code is original and self-contained.
+
+## Block 1: Prose - Why Mixed Workloads Matter
+
+A language model that spends its day writing code does not generate the same
+kind of text as one that spends its day writing essays. Code is repetitive in
+structure but precise in content: braces close, keywords repeat, identifiers
+recur, and the next line is often strongly implied by the previous one.
+Mathematics sits at the other extreme, where each step must follow from the
+last but the symbols are sparse and the phrasing is unusual. Prose fills the
+middle ground. A benchmark that measures only one of these three domains
+misstates the machine, because speculative decoding, caching, and batching all
+respond to how predictable the next token is. This corpus therefore interleaves
+the three domains in fixed proportions, roughly half code, a quarter
+mathematics, and a quarter prose, so that every prompt length samples all three.
+
+## Block 2: Code - A Bounded Ring Buffer in C
+
+The ring buffer below stores fixed-size records without allocation after
+startup. Head and tail advance modulo capacity, and the full condition is
+distinguished from the empty condition by a wrap flag rather than by wasting a
+slot.
+
+```c
+typedef struct {
+    uint32_t head, tail, cap, count;
+    uint8_t wrap;
+    uint8_t *data;
+} ring_t;
+
+int ring_push(ring_t *r, const uint8_t *item, uint32_t len) {
+    if (r->count == r->cap) return -1;
+    uint8_t *dst = r->data + (size_t)r->head * len;
+    memcpy(dst, item, len);
+    r->head++;
+    if (r->head == r->cap) { r->head = 0; r->wrap ^= 1; }
+    r->count++;
+    return 0;
+}
+
+int ring_pop(ring_t *r, uint8_t *out, uint32_t len) {
+    if (r->count == 0) return -1;
+    uint8_t *src = r->data + (size_t)r->tail * len;
+    memcpy(out, src, len);
+    r->tail++;
+    if (r->tail == r->cap) { r->tail = 0; r->wrap ^= 1; }
+    r->count--;
+    return 0;
+}
+```
+
+The count field makes the state machine obvious at the cost of one shared
+counter. A lock-free variant would instead compare head and tail with the wrap
+bit, which saves an atomic but complicates the memory ordering argument. For
+single-producer single-consumer queues the atomic counter is usually cheap
+enough and far easier to audit.
+
+## Block 3: Mathematics - Amortized Cost of Doubling
+
+Consider an array that doubles its capacity when full. Inserting into a
+non-full array costs one unit; a resize when the array holds n elements costs
+n units to copy plus n units to allocate and free. Starting from capacity one,
+the resizes happen at sizes 1, 2, 4, 8, and so on. After m insertions the total
+copy work is 1 + 2 + 4 + ... + m/2, which is a geometric series summing to
+strictly less than m. Therefore the amortized cost per insertion is at most two
+units regardless of m.
+
+The same series argument explains why the naive stack-based reversal of a
+growable list is linear: each element moves at most once per doubling, and the
+number of doublings is logarithmic. What the argument does not cover is the
+constant factor hidden in allocation: a doubling policy that reallocs and copies
+beats a chained block allocator on cache locality but loses on peak memory,
+since the transient peak is three halves of the final size.
+
+## Block 4: Code - An LRU Cache with TTL in Python
+
+```python
+import time
+from collections import OrderedDict
+
+class TtlLru:
+    def __init__(self, capacity, ttl_seconds):
+        self.capacity = capacity
+        self.ttl = ttl_seconds
+        self._entries = OrderedDict()
+
+    def get(self, key):
+        item = self._entries.get(key)
+        if item is None:
+            return None
+        value, expires = item
+        if time.monotonic() >= expires:
+            del self._entries[key]
+            return None
+        self._entries.move_to_end(key)
+        return value
+
+    def put(self, key, value):
+        now = time.monotonic()
+        self._entries[key] = (value, now + self.ttl)
+        self._entries.move_to_end(key)
+        while len(self._entries) > self.capacity:
+            self._entries.popitem(last=False)
+
+    def purge_expired(self):
+        now = time.monotonic()
+        dead = [k for k, (_, exp) in self._entries.items() if now >= exp]
+        for k in dead:
+            del self._entries[k]
+        return len(dead)
+```
+
+Expiration is lazy on read and eager only on capacity pressure. That is the
+right default when reads vastly outnumber writes, because a background sweeper
+would add a thread and a lock for no benefit. The monotonic clock choice
+matters: wall-clock jumps from NTP corrections would otherwise shorten or
+lengthen lifetimes unpredictably.
+
+## Block 5: Prose - Eviction Policy Trade-offs
+
+Least-recently-used eviction assumes that the past predicts the future, which
+holds for request streams with locality and fails badly for scans. A single
+sequential scan through a table inserts every row exactly once, so the cache
+ends up full of rows that will never be touched again, evicting the hot working
+set. Real systems mitigate this with admission filters: only promote an item
+after it has been seen twice, or keep a small frequency sketch in front of the
+cache. Frequency-based eviction such as least-frequently-used resists scans but
+needs aging, otherwise stale popularity from long ago pins cold data forever.
+The practical compromise in most key-value stores is a segmented LRU with a
+small probationary segment feeding a protected segment, which approximates
+frequency with two lists and no counters.
+
+## Block 6: Code - A Reporting Query in SQL
+
+```sql
+WITH daily AS (
+    SELECT
+        date_trunc('day', created_at)          AS day,
+        user_id,
+        COUNT(*)                               AS events,
+        SUM(paid_cents)                        AS revenue
+    FROM events
+    WHERE created_at >= '2026-01-01'
+      AND created_at <  '2026-04-01'
+    GROUP BY 1, 2
+),
+ranked AS (
+    SELECT
+        day,
+        user_id,
+        events,
+        revenue,
+        RANK() OVER (PARTITION BY day ORDER BY revenue DESC, user_id) AS rnk
+    FROM daily
+)
+SELECT day,
+       COUNT(DISTINCT user_id)                AS active_users,
+       SUM(events)                            AS total_events,
+       SUM(revenue)                           AS total_revenue,
+       AVG(revenue)                           AS avg_revenue_per_user,
+       MAX(CASE WHEN rnk <= 3 THEN revenue END) AS top3_revenue
+FROM ranked
+GROUP BY day
+ORDER BY day;
+```
+
+The RANK window function is computed before the outer aggregation, so the
+top-three expression picks the revenue of the three richest users per day.
+Ties are broken by user_id to keep the ranking deterministic across runs;
+without that tiebreaker two runs of the same query can disagree about which
+tied row earned rank three, and a report that pages through results can skip
+or repeat rows.
+
+## Block 7: Mathematics - Exponential Backoff and Jitter
+
+A client retrying a failed request waits d, 2d, 4d, ... after successive
+failures. If many clients fail at the same instant they all retry at the same
+offsets, producing a thundering herd that re-overloads the server. Full jitter
+replaces the deterministic wait with a uniform random value in the interval
+from zero to the current cap. The expected wait is then half the cap, which
+spreads retries over the whole window. The analysis assumes retries are
+independent and that the server recovers between waves; when the failure is a
+shared resource such as a saturated disk, independence fails and the cap should
+grow until the total retry rate falls below the service capacity. A useful
+rule: the cap should exceed the expected recovery time, and the number of
+attempts should be bounded so that the worst-case total wait stays under the
+caller's deadline budget.
+
+## Block 8: Code - Debounce and Throttle in JavaScript
+
+```javascript
+function debounce(fn, wait) {
+    let timer = null;
+    return function debounced(...args) {
+        if (timer !== null) clearTimeout(timer);
+        timer = setTimeout(() => {
+            timer = null;
+            fn.apply(this, args);
+        }, wait);
+    };
+}
+
+function throttle(fn, interval) {
+    let last = 0;
+    let pending = null;
+    return function throttled(...args) {
+        const now = Date.now();
+        const remaining = interval - (now - last);
+        if (remaining <= 0) {
+            if (pending !== null) { clearTimeout(pending); pending = null; }
+            last = now;
+            fn.apply(this, args);
+        } else if (pending === null) {
+            pending = setTimeout(() => {
+                pending = null;
+                last = Date.now();
+                fn.apply(this, args);
+            }, remaining);
+        }
+    };
+}
+```
+
+Debounce collapses a burst into one trailing call; throttle guarantees at most
+one call per interval and, in this variant, also guarantees a trailing call so
+the final state is never dropped. The trailing call is the detail most
+hand-written throttles get wrong: without it, a slider that stops moving
+mid-interval leaves the last value unapplied.
+
+## Block 9: Prose - Async Runtimes and Head-of-Line Blocking
+
+An event loop with a single thread multiplexes thousands of connections by
+never blocking inside a callback. The failure mode is not the loop itself but
+the work inside it: one callback that sorts a large array or parses a huge
+JSON document occupies the thread while every other connection waits. That is
+head-of-line blocking at the runtime level, and it shows up as a bimodal
+latency distribution, most requests fast, a few catastrophically slow, with
+the slow ones correlated with whatever heavy operation is running. The standard
+remedies are to cap synchronous work per callback, move heavy computation to a
+worker pool, or shard the event loop across threads with one loop per core.
+Monitoring should track loop lag directly, the difference between scheduled and
+actual timer firing, because it exposes the problem before user-visible
+latency does.
+
+## Block 10: Code - Merging Intervals with Tests
+
+```python
+from typing import List, Tuple
+
+def merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    if not intervals:
+        return []
+    ordered = sorted(intervals)
+    merged = [list(ordered[0])]
+    for start, end in ordered[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [tuple(m) for m in merged]
+
+def count_gaps(merged: List[Tuple[int, int]], lo: int, hi: int) -> int:
+    gaps = 0
+    cursor = lo
+    for start, end in merged:
+        if start > cursor:
+            gaps += start - cursor
+        cursor = max(cursor, end)
+    if hi > cursor:
+        gaps += hi - cursor
+    return gaps
+
+assert merge_intervals([(1, 3), (2, 6), (8, 10), (15, 18)]) == [(1, 6), (8, 10), (15, 18)]
+assert merge_intervals([]) == []
+assert merge_intervals([(5, 5)]) == [(5, 5)]
+assert count_gaps([(1, 6), (8, 10)], 0, 12) == 7
+```
+
+Sorting dominates the cost at n log n; the sweep itself is linear. The
+half-open convention matters: with closed intervals, touching intervals such as
+(1, 3) and (3, 5) merge, which is usually what a calendar wants but not what a
+scheduler allocating machine time wants, where (1, 3) and (3, 5) should stay
+separate.
+
+## Block 11: Mathematics - Overlap Probability
+
+Drop n intervals of length a uniformly at random onto a segment of length L,
+with a far smaller than L. The expected number of overlapping pairs is at most
+n choose 2 times a over L, since two random starting points overlap exactly
+when their distance is under a. For small probabilities the count of overlaps
+is approximately Poisson with that mean, so the chance of no overlap at all is
+the exponential of minus the mean. This is the same computation that sizes
+hash-table collisions and radio-packet collisions, and it explains why the
+threshold for a collision becoming likely sits near the square root of the
+slot count: setting the mean to one gives n on the order of the square root of
+the product of L and twice a over a.
+
+## Block 12: Code - Bit Packing and Endianness in C
+
+```c
+typedef struct {
+    uint32_t id     : 20;
+    uint32_t kind   :  4;
+    uint32_t flags  :  6;
+    uint32_t epoch  :  2;
+} packed_t;
+
+uint32_t pack_id_kind(uint32_t id, uint32_t kind) {
+    return (id << 12) | (kind << 8) | 0u;
+}
+
+uint32_t unpack_id(uint32_t word)  { return word >> 12; }
+uint32_t unpack_kind(uint32_t word){ return (word >> 8) & 0xFu; }
+```
+
+Bitfields inside a struct do not define a portable layout: the compiler chooses
+allocation order and padding, so a struct written by one toolchain may be read
+wrongly by another. The explicit shift-and-mask helpers above are the portable
+form; the struct form is fine only inside a single process. When serializing,
+fix the byte order explicitly with shifts rather than trusting the host, and
+document that the word is big-endian on the wire.
+
+## Block 13: Prose - Memory Ordering Notes
+
+A CPU reorders loads and stores within the limits of its memory model, and so
+does the compiler. Single-threaded semantics are preserved, but another thread
+observing the same data can see stores land out of program order. The fix is
+not to sprinkle fences everywhere but to establish release-acquire discipline:
+the writer publishes data and then releases a flag; the reader acquires the
+flag and only then trusts the data. A release store orders all prior writes
+before it; an acquire load orders all later reads after it; paired, they form
+a happens-before edge that makes the payload visible. Everything else - seq_cst
+fences, data dependencies, false sharing, store-buffer draining - is tuning
+around that one discipline.
+
+## Block 14: Code - A Log Parsing Pipeline in Bash
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+log_file="${1:?usage: parse.sh access.log}"
+cutoff="${2:-200}"
+
+awk '
+  match($0, /"[A-Z]+ [^ ]+ HTTP\/[0-9.]+" ([0-9]{3})/, m) {
+    status = m[1]
+  }
+  match($0, /([0-9]+) "https?:\/\/[^"]*"$/ , s) {
+    bytes = s[1]
+  }
+  { total++; sum += bytes }
+  END { printf "requests=%d avg_bytes=%.1f\n", total, (total ? sum/total : 0) }
+' "$log_file"
+
+awk -v cutoff="$cutoff" '
+  match($0, /"[A-Z]+ [^ ]+ HTTP\/[0-9.]+" ([0-9]{3})/, m) && m[1]+0 >= cutoff {
+    count[m[1]]++
+  }
+  END { for (code in count) printf "%s %d\n", code, count[code] }
+' "$log_file" | sort -n
+```
+
+The pipeline assumes the combined log format and GNU awk for the three-argument
+match. Portability to POSIX awk would require splitting the line on quotes and
+spaces by hand, which is exactly the kind of brittle parsing that motivates the
+regex form. The two passes could be one, but keeping the average-bytes report
+separate from the status histogram keeps each expression reviewable.
+
+## Block 15: Mathematics - Reservoir Sampling
+
+A stream of unknown length must yield a uniform sample of k items using only k
+slots. Keep the first k items. When item number i arrives for i greater than k,
+replace a uniformly chosen slot with probability k over i. The proof runs
+backward: the last item is kept with probability k over n. For any earlier item
+i, it survives its own acceptance with probability k over i and then survives
+every later rejection, and the product of the survival factors from i plus one
+to n telescopes to i over n, so the total is k over n for every item. The
+variance of any estimator built on the sample therefore behaves like a fixed
+sample of size k, and the memory stays constant no matter how long the stream
+runs, which is why the algorithm appears in network monitors and query
+planners.
+
+## Block 16: Code - A Token Bucket Rate Limiter
+
+```python
+import time
+import threading
+
+class TokenBucket:
+    def __init__(self, rate, burst, clock=time.monotonic):
+        self.rate = float(rate)
+        self.capacity = float(burst)
+        self.tokens = float(burst)
+        self.clock = clock
+        self.last = clock()
+        self._lock = threading.Lock()
+
+    def _refill(self):
+        now = self.clock()
+        self.tokens = min(self.capacity, self.tokens + (now - self.last) * self.rate)
+        self.last = now
+
+    def allow(self, cost=1):
+        with self._lock:
+            self._refill()
+            if self.tokens >= cost:
+                self.tokens -= cost
+                return True
+            return False
+```
+
+The bucket refills lazily, so no timer thread is needed. The burst parameter
+sets the maximum instantaneous allowance; the rate sets the long-run average.
+Distributed deployments need a shared bucket, and the naive read-modify-write
+over a network turns into contention; the standard fix is to lease tokens in
+chunks, accepting a small overshoot bound in exchange for one round trip per
+chunk instead of one per request.
+
+## Block 17: Prose - Service Level Objectives
+
+A service level objective is a target on a measured indicator, usually
+availability or latency, evaluated over a window. Two design choices dominate
+everything else. First, which percentile: an average hides tails, a maximum
+hides nothing but is hostage to a single slow request, so p99 or p99.9 is the
+customary compromise, with the understanding that the measured percentile is
+itself an estimate unless the full distribution is kept. Second, the error
+budget: the objective defines allowed unavailability, and every point spent is
+a point not available for launches and experiments. Teams that treat the budget
+as an engineering asset - freeze risky changes when it is spent, ship freely
+when it is not - converge on honest reliability numbers; teams that treat the
+objective as marketing keep both the bad latency and the bad data.
+
+## Block 18: Code - A Small Recursive-Descent Parser
+
+```python
+class Parser:
+    def __init__(self, text):
+        self.text = text
+        self.pos = 0
+
+    def parse_expr(self):
+        value = self.parse_term()
+        while self.pos < len(self.text) and self.text[self.pos] in '+-':
+            op = self.text[self.pos]
+            self.pos += 1
+            rhs = self.parse_term()
+            value = value + rhs if op == '+' else value - rhs
+        return value
+
+    def parse_term(self):
+        value = self.parse_atom()
+        while self.pos < len(self.text) and self.text[self.pos] in '*/':
+            op = self.text[self.pos]
+            self.pos += 1
+            rhs = self.parse_atom()
+            value = value * rhs if op == '*' else value // rhs
+        return value
+
+    def parse_atom(self):
+        if self.pos < len(self.text) and self.text[self.pos] == '(':
+            self.pos += 1
+            value = self.parse_expr()
+            if self.pos < len(self.text) and self.text[self.pos] == ')':
+                self.pos += 1
+            else:
+                raise SyntaxError('expected )')
+            return value
+        start = self.pos
+        while self.pos < len(self.text) and self.text[self.pos].isdigit():
+            self.pos += 1
+        if start == self.pos:
+            raise SyntaxError('expected number')
+        return int(self.text[start:self.pos])
+```
+
+Each grammar rule becomes one function, and precedence is encoded by the call
+chain: expression calls term calls atom. Adding unary minus means one more
+rule between term and atom. The hand-written form beats a generated parser for
+error messages because every function knows exactly what it expected and where.
+
+## Block 19: Mathematics - Backtracking Blow-up
+
+A regex engine that backtracks tries alternatives in order and rewinds on
+failure. Nested quantifiers such as (a+)+ against a string of n a characters
+followed by a single failure character explore every composition of n into
+parts, which is 2 to the n minus 1 possibilities. The blow-up is not a quirk of
+the implementation but of the search space: any engine that enumerates
+derivations pays it. The fix is to change the search, not the tuning: a
+deterministic finite automaton simulates all states at once in time linear in
+the text times the number of states, and a backtracking engine with memoized
+positions achieves the same bound. Production engines choose one of these two
+strategies precisely because the exponential case is reachable from untrusted
+input.
+
+## Block 20: Prose - Closing Notes on Measurement
+
+Three habits separate a trustworthy benchmark from a decorative one. Measure
+the distribution, not the mean, because bimodal behavior is the norm once
+caching, speculation, or retries are involved. Fix everything that is not the
+subject of the measurement: the corpus, the seed, the output length, the
+greedy decoding setting, and the cache state, so that two runs on two machines
+can be compared at all. And record the environment alongside the number,
+because a speed without a configuration is an anecdote. The corpus in this file
+exists to make the first and second habits automatic: it is byte-identical for
+every user at every hour, it mixes code, mathematics, and prose in fixed
+proportions, and it is long enough that every prompt length from half a
+thousand tokens to a hundred thousand samples all three domains.
 `;
-        const BENCHMARK_CORPUS_TOKENS = BENCHMARK_CORPUS_V2.split(/\s+/).filter(Boolean);
+        const BENCHMARK_CORPUS_TOKENS = BENCHMARK_CORPUS_V3.split(/\s+/).filter(Boolean);
         const ASCII_FILLER_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
         const PROMPT_TOKEN_WORDS = [
             'a', 'the', 'and', 'of', 'to', 'in', 'is', 'it', 'that', 'for', 'with', 'as',
@@ -3012,14 +2954,11 @@ mood.
             return Math.max(requestedLength, 1);
         }
 
-        // v2.1 浮动输出：decode 窗口随档位反比浮动。投机解码（MTP 等）每次生成开头草稿命中率是冷的，
-        // 512 的短窗口测出的是"开局速度"（实测 65），长窗口才是稳态（llama.cpp 21k token 连续生成稳态 90）。
-        // 短档输出便宜就多给，长档输出贵就保住时长；口径见 METHODOLOGY.md。
+                // v3.0 固定输出 512：实测推翻了 v2.1 浮动输出的假设——投机解码开局的 ngram 草稿几乎全中（开局段最快），
+        // 窗口拉长反而稀释掉快段（同 prompt 实测：输出 512 → 46 tok/s，输出 2048 → 42 tok/s）。
+        // 固定窗口也保住两档可比性与复测口径，口径见 METHODOLOGY.md。
         function getOutputLengthFor(length) {
-            const L = Number(length) || 0;
-            if (L <= 1024) return 2048;
-            if (L <= 4096) return 1536;
-            return 1024;   // 8192 及以上统一 1024：长档 decode 慢，窗口再长每遍也只多十几秒，别为省时间牺牲最关键的档位
+            return 512;
         }
 
         function getCalibratedGenerationPromptLength(length, calibration) {
@@ -3927,7 +3866,7 @@ mood.
                     results: resultsToSave, // 根据设置保存完整或简化的结果
                     stats: stats, // 统计信息（min/max/avg/P50/P90/P95）
                     // 记录结构版本：旧版本记录（没有这个字段）禁止上传，避免绕过评级规则
-                    schema: 3,
+                    schema: 4,
                     // 多并发梯子明细：从历史补传时要用它一起上传
                     concRuns: (typeof window !== 'undefined' && Array.isArray(window._concRuns)) ? JSON.parse(JSON.stringify(window._concRuns)) : [],
                     // 每遍原始值（长度/遍号/prefill 毫秒与速度/排队估算/是否保留/剔除原因/token 来源）
@@ -5083,7 +5022,7 @@ const row = document.createElement('tr');
                 let firstPrompt = st.acc.firstPrompt;
                 st.networkLatencyMs = await collectNetworkLatencySample(latencySamples, apiUrl, 'openai', modelName, timeout);
                 const networkLatencyMs = st.networkLatencyMs;
-                const outLen = getOutputLengthFor(length);   // v2.1 浮动输出：decode 窗口随档位反比
+                const outLen = getOutputLengthFor(length);   // v3.0 固定输出 512
                 // 每档超时自适应：prefill 按 1k tok/s 下限 + 输出按 22 tok/s 下限，再加 30s 余量。
                 // 固定超时要么短档误杀（v2.1 输出 2048 要 40s+），要么长档不够（262144 prefill 3 分钟）
                 const reqTimeout = Math.max(timeout, 30000 + resolvedPromptLength * 1.0 + outLen * 45);
@@ -6225,7 +6164,7 @@ try {
 
                 const requests = [];
                 let firstPrompt = ''; // 保存第一个请求的prompt用于详情展示
-                const outLen = getOutputLengthFor(length);   // v2.1 浮动输出
+                const outLen = getOutputLengthFor(length);   // v3.0 固定输出 512
 
                 for (let i = 0; i < concurrency; i++) {
                     const generationPromptLength = getCalibratedGenerationPromptLength(length, promptCalibration);
@@ -9577,7 +9516,7 @@ function _parseRunCommand(cmd) {
                 }
                 const payload = {
                     user_code: userCode,
-                    schema_version: 3,
+                    schema_version: 4,
                     benchmark_version: BENCHMARK_VERSION,
                     corpus_hash: CORPUS_SHA256,
                     is_greedy: (parseFloat(document.getElementById('temperatureInput')?.value) === 0),
@@ -9674,7 +9613,7 @@ function _parseRunCommand(cmd) {
                         let okC = 0;
                         for (const cr of window._concRuns) {
                             const cp = {
-                                user_code: userCode, schema_version: 3, benchmark_version: BENCHMARK_VERSION, corpus_hash: CORPUS_SHA256,
+                                user_code: userCode, schema_version: 4, benchmark_version: BENCHMARK_VERSION, corpus_hash: CORPUS_SHA256,
                                 is_greedy: true, temperature: 0, top_p: 1, repeat_count: 1,
                                 nickname: nick || null, model_name: payload.model_name, hardware: hw,
                                 framework: fw || null, quantization: qt || null, notes: notes || null,
@@ -9712,7 +9651,7 @@ function _parseRunCommand(cmd) {
                 let ok = 0, fail = 0, lastErr = '';
                 let firstShareUrl = '';
                 for (const bd of _batchPayloads) {
-                    const payload = { user_code: userCode, schema_version: 3, nickname: nickname || null, model_name: modelName || bd.model || t.cloudUnknownModel || 'Unknown Model', hardware: hw, framework: fw || null, quantization: qt || null, notes: notes || bd.notes || null, concurrency: bd.concurrency, avg_prefill_speed: bd.avgPrefill ?? bd.maxPrefill, avg_decode_speed: bd.avgDecode ?? bd.maxDecode, max_prefill_speed: bd.maxPrefill, max_decode_speed: bd.maxDecode, source: 'web_pure', record_tags: bd.recordTags || ['source:web_pure'], results_json: JSON.stringify(bd.points) };
+                    const payload = { user_code: userCode, schema_version: 4, nickname: nickname || null, model_name: modelName || bd.model || t.cloudUnknownModel || 'Unknown Model', hardware: hw, framework: fw || null, quantization: qt || null, notes: notes || bd.notes || null, concurrency: bd.concurrency, avg_prefill_speed: bd.avgPrefill ?? bd.maxPrefill, avg_decode_speed: bd.avgDecode ?? bd.maxDecode, max_prefill_speed: bd.maxPrefill, max_decode_speed: bd.maxDecode, source: 'web_pure', record_tags: bd.recordTags || ['source:web_pure'], results_json: JSON.stringify(bd.points) };
                     if (runCommand) payload.run_command = runCommand;
                     try {
                         const r = await _sbInsert(payload);

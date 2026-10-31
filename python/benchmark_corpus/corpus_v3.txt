@@ -1,0 +1,511 @@
+# Deterministic Benchmark Corpus v3.0
+# Synthetic mixed-domain reference text: code, mathematics, and engineering prose.
+# Written for benchmarking purposes. Not derived from any published work;
+# safe from pretraining contamination. Code is original and self-contained.
+
+## Block 1: Prose - Why Mixed Workloads Matter
+
+A language model that spends its day writing code does not generate the same
+kind of text as one that spends its day writing essays. Code is repetitive in
+structure but precise in content: braces close, keywords repeat, identifiers
+recur, and the next line is often strongly implied by the previous one.
+Mathematics sits at the other extreme, where each step must follow from the
+last but the symbols are sparse and the phrasing is unusual. Prose fills the
+middle ground. A benchmark that measures only one of these three domains
+misstates the machine, because speculative decoding, caching, and batching all
+respond to how predictable the next token is. This corpus therefore interleaves
+the three domains in fixed proportions, roughly half code, a quarter
+mathematics, and a quarter prose, so that every prompt length samples all three.
+
+## Block 2: Code - A Bounded Ring Buffer in C
+
+The ring buffer below stores fixed-size records without allocation after
+startup. Head and tail advance modulo capacity, and the full condition is
+distinguished from the empty condition by a wrap flag rather than by wasting a
+slot.
+
+```c
+typedef struct {
+    uint32_t head, tail, cap, count;
+    uint8_t wrap;
+    uint8_t *data;
+} ring_t;
+
+int ring_push(ring_t *r, const uint8_t *item, uint32_t len) {
+    if (r->count == r->cap) return -1;
+    uint8_t *dst = r->data + (size_t)r->head * len;
+    memcpy(dst, item, len);
+    r->head++;
+    if (r->head == r->cap) { r->head = 0; r->wrap ^= 1; }
+    r->count++;
+    return 0;
+}
+
+int ring_pop(ring_t *r, uint8_t *out, uint32_t len) {
+    if (r->count == 0) return -1;
+    uint8_t *src = r->data + (size_t)r->tail * len;
+    memcpy(out, src, len);
+    r->tail++;
+    if (r->tail == r->cap) { r->tail = 0; r->wrap ^= 1; }
+    r->count--;
+    return 0;
+}
+```
+
+The count field makes the state machine obvious at the cost of one shared
+counter. A lock-free variant would instead compare head and tail with the wrap
+bit, which saves an atomic but complicates the memory ordering argument. For
+single-producer single-consumer queues the atomic counter is usually cheap
+enough and far easier to audit.
+
+## Block 3: Mathematics - Amortized Cost of Doubling
+
+Consider an array that doubles its capacity when full. Inserting into a
+non-full array costs one unit; a resize when the array holds n elements costs
+n units to copy plus n units to allocate and free. Starting from capacity one,
+the resizes happen at sizes 1, 2, 4, 8, and so on. After m insertions the total
+copy work is 1 + 2 + 4 + ... + m/2, which is a geometric series summing to
+strictly less than m. Therefore the amortized cost per insertion is at most two
+units regardless of m.
+
+The same series argument explains why the naive stack-based reversal of a
+growable list is linear: each element moves at most once per doubling, and the
+number of doublings is logarithmic. What the argument does not cover is the
+constant factor hidden in allocation: a doubling policy that reallocs and copies
+beats a chained block allocator on cache locality but loses on peak memory,
+since the transient peak is three halves of the final size.
+
+## Block 4: Code - An LRU Cache with TTL in Python
+
+```python
+import time
+from collections import OrderedDict
+
+class TtlLru:
+    def __init__(self, capacity, ttl_seconds):
+        self.capacity = capacity
+        self.ttl = ttl_seconds
+        self._entries = OrderedDict()
+
+    def get(self, key):
+        item = self._entries.get(key)
+        if item is None:
+            return None
+        value, expires = item
+        if time.monotonic() >= expires:
+            del self._entries[key]
+            return None
+        self._entries.move_to_end(key)
+        return value
+
+    def put(self, key, value):
+        now = time.monotonic()
+        self._entries[key] = (value, now + self.ttl)
+        self._entries.move_to_end(key)
+        while len(self._entries) > self.capacity:
+            self._entries.popitem(last=False)
+
+    def purge_expired(self):
+        now = time.monotonic()
+        dead = [k for k, (_, exp) in self._entries.items() if now >= exp]
+        for k in dead:
+            del self._entries[k]
+        return len(dead)
+```
+
+Expiration is lazy on read and eager only on capacity pressure. That is the
+right default when reads vastly outnumber writes, because a background sweeper
+would add a thread and a lock for no benefit. The monotonic clock choice
+matters: wall-clock jumps from NTP corrections would otherwise shorten or
+lengthen lifetimes unpredictably.
+
+## Block 5: Prose - Eviction Policy Trade-offs
+
+Least-recently-used eviction assumes that the past predicts the future, which
+holds for request streams with locality and fails badly for scans. A single
+sequential scan through a table inserts every row exactly once, so the cache
+ends up full of rows that will never be touched again, evicting the hot working
+set. Real systems mitigate this with admission filters: only promote an item
+after it has been seen twice, or keep a small frequency sketch in front of the
+cache. Frequency-based eviction such as least-frequently-used resists scans but
+needs aging, otherwise stale popularity from long ago pins cold data forever.
+The practical compromise in most key-value stores is a segmented LRU with a
+small probationary segment feeding a protected segment, which approximates
+frequency with two lists and no counters.
+
+## Block 6: Code - A Reporting Query in SQL
+
+```sql
+WITH daily AS (
+    SELECT
+        date_trunc('day', created_at)          AS day,
+        user_id,
+        COUNT(*)                               AS events,
+        SUM(paid_cents)                        AS revenue
+    FROM events
+    WHERE created_at >= '2026-01-01'
+      AND created_at <  '2026-04-01'
+    GROUP BY 1, 2
+),
+ranked AS (
+    SELECT
+        day,
+        user_id,
+        events,
+        revenue,
+        RANK() OVER (PARTITION BY day ORDER BY revenue DESC, user_id) AS rnk
+    FROM daily
+)
+SELECT day,
+       COUNT(DISTINCT user_id)                AS active_users,
+       SUM(events)                            AS total_events,
+       SUM(revenue)                           AS total_revenue,
+       AVG(revenue)                           AS avg_revenue_per_user,
+       MAX(CASE WHEN rnk <= 3 THEN revenue END) AS top3_revenue
+FROM ranked
+GROUP BY day
+ORDER BY day;
+```
+
+The RANK window function is computed before the outer aggregation, so the
+top-three expression picks the revenue of the three richest users per day.
+Ties are broken by user_id to keep the ranking deterministic across runs;
+without that tiebreaker two runs of the same query can disagree about which
+tied row earned rank three, and a report that pages through results can skip
+or repeat rows.
+
+## Block 7: Mathematics - Exponential Backoff and Jitter
+
+A client retrying a failed request waits d, 2d, 4d, ... after successive
+failures. If many clients fail at the same instant they all retry at the same
+offsets, producing a thundering herd that re-overloads the server. Full jitter
+replaces the deterministic wait with a uniform random value in the interval
+from zero to the current cap. The expected wait is then half the cap, which
+spreads retries over the whole window. The analysis assumes retries are
+independent and that the server recovers between waves; when the failure is a
+shared resource such as a saturated disk, independence fails and the cap should
+grow until the total retry rate falls below the service capacity. A useful
+rule: the cap should exceed the expected recovery time, and the number of
+attempts should be bounded so that the worst-case total wait stays under the
+caller's deadline budget.
+
+## Block 8: Code - Debounce and Throttle in JavaScript
+
+```javascript
+function debounce(fn, wait) {
+    let timer = null;
+    return function debounced(...args) {
+        if (timer !== null) clearTimeout(timer);
+        timer = setTimeout(() => {
+            timer = null;
+            fn.apply(this, args);
+        }, wait);
+    };
+}
+
+function throttle(fn, interval) {
+    let last = 0;
+    let pending = null;
+    return function throttled(...args) {
+        const now = Date.now();
+        const remaining = interval - (now - last);
+        if (remaining <= 0) {
+            if (pending !== null) { clearTimeout(pending); pending = null; }
+            last = now;
+            fn.apply(this, args);
+        } else if (pending === null) {
+            pending = setTimeout(() => {
+                pending = null;
+                last = Date.now();
+                fn.apply(this, args);
+            }, remaining);
+        }
+    };
+}
+```
+
+Debounce collapses a burst into one trailing call; throttle guarantees at most
+one call per interval and, in this variant, also guarantees a trailing call so
+the final state is never dropped. The trailing call is the detail most
+hand-written throttles get wrong: without it, a slider that stops moving
+mid-interval leaves the last value unapplied.
+
+## Block 9: Prose - Async Runtimes and Head-of-Line Blocking
+
+An event loop with a single thread multiplexes thousands of connections by
+never blocking inside a callback. The failure mode is not the loop itself but
+the work inside it: one callback that sorts a large array or parses a huge
+JSON document occupies the thread while every other connection waits. That is
+head-of-line blocking at the runtime level, and it shows up as a bimodal
+latency distribution, most requests fast, a few catastrophically slow, with
+the slow ones correlated with whatever heavy operation is running. The standard
+remedies are to cap synchronous work per callback, move heavy computation to a
+worker pool, or shard the event loop across threads with one loop per core.
+Monitoring should track loop lag directly, the difference between scheduled and
+actual timer firing, because it exposes the problem before user-visible
+latency does.
+
+## Block 10: Code - Merging Intervals with Tests
+
+```python
+from typing import List, Tuple
+
+def merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    if not intervals:
+        return []
+    ordered = sorted(intervals)
+    merged = [list(ordered[0])]
+    for start, end in ordered[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [tuple(m) for m in merged]
+
+def count_gaps(merged: List[Tuple[int, int]], lo: int, hi: int) -> int:
+    gaps = 0
+    cursor = lo
+    for start, end in merged:
+        if start > cursor:
+            gaps += start - cursor
+        cursor = max(cursor, end)
+    if hi > cursor:
+        gaps += hi - cursor
+    return gaps
+
+assert merge_intervals([(1, 3), (2, 6), (8, 10), (15, 18)]) == [(1, 6), (8, 10), (15, 18)]
+assert merge_intervals([]) == []
+assert merge_intervals([(5, 5)]) == [(5, 5)]
+assert count_gaps([(1, 6), (8, 10)], 0, 12) == 7
+```
+
+Sorting dominates the cost at n log n; the sweep itself is linear. The
+half-open convention matters: with closed intervals, touching intervals such as
+(1, 3) and (3, 5) merge, which is usually what a calendar wants but not what a
+scheduler allocating machine time wants, where (1, 3) and (3, 5) should stay
+separate.
+
+## Block 11: Mathematics - Overlap Probability
+
+Drop n intervals of length a uniformly at random onto a segment of length L,
+with a far smaller than L. The expected number of overlapping pairs is at most
+n choose 2 times a over L, since two random starting points overlap exactly
+when their distance is under a. For small probabilities the count of overlaps
+is approximately Poisson with that mean, so the chance of no overlap at all is
+the exponential of minus the mean. This is the same computation that sizes
+hash-table collisions and radio-packet collisions, and it explains why the
+threshold for a collision becoming likely sits near the square root of the
+slot count: setting the mean to one gives n on the order of the square root of
+the product of L and twice a over a.
+
+## Block 12: Code - Bit Packing and Endianness in C
+
+```c
+typedef struct {
+    uint32_t id     : 20;
+    uint32_t kind   :  4;
+    uint32_t flags  :  6;
+    uint32_t epoch  :  2;
+} packed_t;
+
+uint32_t pack_id_kind(uint32_t id, uint32_t kind) {
+    return (id << 12) | (kind << 8) | 0u;
+}
+
+uint32_t unpack_id(uint32_t word)  { return word >> 12; }
+uint32_t unpack_kind(uint32_t word){ return (word >> 8) & 0xFu; }
+```
+
+Bitfields inside a struct do not define a portable layout: the compiler chooses
+allocation order and padding, so a struct written by one toolchain may be read
+wrongly by another. The explicit shift-and-mask helpers above are the portable
+form; the struct form is fine only inside a single process. When serializing,
+fix the byte order explicitly with shifts rather than trusting the host, and
+document that the word is big-endian on the wire.
+
+## Block 13: Prose - Memory Ordering Notes
+
+A CPU reorders loads and stores within the limits of its memory model, and so
+does the compiler. Single-threaded semantics are preserved, but another thread
+observing the same data can see stores land out of program order. The fix is
+not to sprinkle fences everywhere but to establish release-acquire discipline:
+the writer publishes data and then releases a flag; the reader acquires the
+flag and only then trusts the data. A release store orders all prior writes
+before it; an acquire load orders all later reads after it; paired, they form
+a happens-before edge that makes the payload visible. Everything else - seq_cst
+fences, data dependencies, false sharing, store-buffer draining - is tuning
+around that one discipline.
+
+## Block 14: Code - A Log Parsing Pipeline in Bash
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+log_file="${1:?usage: parse.sh access.log}"
+cutoff="${2:-200}"
+
+awk '
+  match($0, /"[A-Z]+ [^ ]+ HTTP\/[0-9.]+" ([0-9]{3})/, m) {
+    status = m[1]
+  }
+  match($0, /([0-9]+) "https?:\/\/[^"]*"$/ , s) {
+    bytes = s[1]
+  }
+  { total++; sum += bytes }
+  END { printf "requests=%d avg_bytes=%.1f\n", total, (total ? sum/total : 0) }
+' "$log_file"
+
+awk -v cutoff="$cutoff" '
+  match($0, /"[A-Z]+ [^ ]+ HTTP\/[0-9.]+" ([0-9]{3})/, m) && m[1]+0 >= cutoff {
+    count[m[1]]++
+  }
+  END { for (code in count) printf "%s %d\n", code, count[code] }
+' "$log_file" | sort -n
+```
+
+The pipeline assumes the combined log format and GNU awk for the three-argument
+match. Portability to POSIX awk would require splitting the line on quotes and
+spaces by hand, which is exactly the kind of brittle parsing that motivates the
+regex form. The two passes could be one, but keeping the average-bytes report
+separate from the status histogram keeps each expression reviewable.
+
+## Block 15: Mathematics - Reservoir Sampling
+
+A stream of unknown length must yield a uniform sample of k items using only k
+slots. Keep the first k items. When item number i arrives for i greater than k,
+replace a uniformly chosen slot with probability k over i. The proof runs
+backward: the last item is kept with probability k over n. For any earlier item
+i, it survives its own acceptance with probability k over i and then survives
+every later rejection, and the product of the survival factors from i plus one
+to n telescopes to i over n, so the total is k over n for every item. The
+variance of any estimator built on the sample therefore behaves like a fixed
+sample of size k, and the memory stays constant no matter how long the stream
+runs, which is why the algorithm appears in network monitors and query
+planners.
+
+## Block 16: Code - A Token Bucket Rate Limiter
+
+```python
+import time
+import threading
+
+class TokenBucket:
+    def __init__(self, rate, burst, clock=time.monotonic):
+        self.rate = float(rate)
+        self.capacity = float(burst)
+        self.tokens = float(burst)
+        self.clock = clock
+        self.last = clock()
+        self._lock = threading.Lock()
+
+    def _refill(self):
+        now = self.clock()
+        self.tokens = min(self.capacity, self.tokens + (now - self.last) * self.rate)
+        self.last = now
+
+    def allow(self, cost=1):
+        with self._lock:
+            self._refill()
+            if self.tokens >= cost:
+                self.tokens -= cost
+                return True
+            return False
+```
+
+The bucket refills lazily, so no timer thread is needed. The burst parameter
+sets the maximum instantaneous allowance; the rate sets the long-run average.
+Distributed deployments need a shared bucket, and the naive read-modify-write
+over a network turns into contention; the standard fix is to lease tokens in
+chunks, accepting a small overshoot bound in exchange for one round trip per
+chunk instead of one per request.
+
+## Block 17: Prose - Service Level Objectives
+
+A service level objective is a target on a measured indicator, usually
+availability or latency, evaluated over a window. Two design choices dominate
+everything else. First, which percentile: an average hides tails, a maximum
+hides nothing but is hostage to a single slow request, so p99 or p99.9 is the
+customary compromise, with the understanding that the measured percentile is
+itself an estimate unless the full distribution is kept. Second, the error
+budget: the objective defines allowed unavailability, and every point spent is
+a point not available for launches and experiments. Teams that treat the budget
+as an engineering asset - freeze risky changes when it is spent, ship freely
+when it is not - converge on honest reliability numbers; teams that treat the
+objective as marketing keep both the bad latency and the bad data.
+
+## Block 18: Code - A Small Recursive-Descent Parser
+
+```python
+class Parser:
+    def __init__(self, text):
+        self.text = text
+        self.pos = 0
+
+    def parse_expr(self):
+        value = self.parse_term()
+        while self.pos < len(self.text) and self.text[self.pos] in '+-':
+            op = self.text[self.pos]
+            self.pos += 1
+            rhs = self.parse_term()
+            value = value + rhs if op == '+' else value - rhs
+        return value
+
+    def parse_term(self):
+        value = self.parse_atom()
+        while self.pos < len(self.text) and self.text[self.pos] in '*/':
+            op = self.text[self.pos]
+            self.pos += 1
+            rhs = self.parse_atom()
+            value = value * rhs if op == '*' else value // rhs
+        return value
+
+    def parse_atom(self):
+        if self.pos < len(self.text) and self.text[self.pos] == '(':
+            self.pos += 1
+            value = self.parse_expr()
+            if self.pos < len(self.text) and self.text[self.pos] == ')':
+                self.pos += 1
+            else:
+                raise SyntaxError('expected )')
+            return value
+        start = self.pos
+        while self.pos < len(self.text) and self.text[self.pos].isdigit():
+            self.pos += 1
+        if start == self.pos:
+            raise SyntaxError('expected number')
+        return int(self.text[start:self.pos])
+```
+
+Each grammar rule becomes one function, and precedence is encoded by the call
+chain: expression calls term calls atom. Adding unary minus means one more
+rule between term and atom. The hand-written form beats a generated parser for
+error messages because every function knows exactly what it expected and where.
+
+## Block 19: Mathematics - Backtracking Blow-up
+
+A regex engine that backtracks tries alternatives in order and rewinds on
+failure. Nested quantifiers such as (a+)+ against a string of n a characters
+followed by a single failure character explore every composition of n into
+parts, which is 2 to the n minus 1 possibilities. The blow-up is not a quirk of
+the implementation but of the search space: any engine that enumerates
+derivations pays it. The fix is to change the search, not the tuning: a
+deterministic finite automaton simulates all states at once in time linear in
+the text times the number of states, and a backtracking engine with memoized
+positions achieves the same bound. Production engines choose one of these two
+strategies precisely because the exponential case is reachable from untrusted
+input.
+
+## Block 20: Prose - Closing Notes on Measurement
+
+Three habits separate a trustworthy benchmark from a decorative one. Measure
+the distribution, not the mean, because bimodal behavior is the norm once
+caching, speculation, or retries are involved. Fix everything that is not the
+subject of the measurement: the corpus, the seed, the output length, the
+greedy decoding setting, and the cache state, so that two runs on two machines
+can be compared at all. And record the environment alongside the number,
+because a speed without a configuration is an anecdote. The corpus in this file
+exists to make the first and second habits automatic: it is byte-identical for
+every user at every hour, it mixes code, mathematics, and prose in fixed
+proportions, and it is long enough that every prompt length from half a
+thousand tokens to a hundred thousand samples all three domains.
