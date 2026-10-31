@@ -328,6 +328,14 @@
             width: 12%;
             text-align: center;
             padding: 4px 2px;
+            vertical-align: middle;
+        }
+
+        /* 按钮转块级+水平居中：td 默认 vertical-align:middle 即可垂直居中，
+           内联按钮会被基线/行框顶偏（状态列折两行时尤其明显） */
+        #results td .detail-button {
+            display: block;
+            margin: 0 auto;
         }
 
         #results tr:nth-child(even) {
@@ -2388,7 +2396,7 @@ startup. Head and tail advance modulo capacity, and the full condition is
 distinguished from the empty condition by a wrap flag rather than by wasting a
 slot.
 
-```c
+\`\`\`c
 typedef struct {
     uint32_t head, tail, cap, count;
     uint8_t wrap;
@@ -2414,7 +2422,7 @@ int ring_pop(ring_t *r, uint8_t *out, uint32_t len) {
     r->count--;
     return 0;
 }
-```
+\`\`\`
 
 The count field makes the state machine obvious at the cost of one shared
 counter. A lock-free variant would instead compare head and tail with the wrap
@@ -2441,7 +2449,7 @@ since the transient peak is three halves of the final size.
 
 ## Block 4: Code - An LRU Cache with TTL in Python
 
-```python
+\`\`\`python
 import time
 from collections import OrderedDict
 
@@ -2475,7 +2483,7 @@ class TtlLru:
         for k in dead:
             del self._entries[k]
         return len(dead)
-```
+\`\`\`
 
 Expiration is lazy on read and eager only on capacity pressure. That is the
 right default when reads vastly outnumber writes, because a background sweeper
@@ -2499,7 +2507,7 @@ frequency with two lists and no counters.
 
 ## Block 6: Code - A Reporting Query in SQL
 
-```sql
+\`\`\`sql
 WITH daily AS (
     SELECT
         date_trunc('day', created_at)          AS day,
@@ -2529,7 +2537,7 @@ SELECT day,
 FROM ranked
 GROUP BY day
 ORDER BY day;
-```
+\`\`\`
 
 The RANK window function is computed before the outer aggregation, so the
 top-three expression picks the revenue of the three richest users per day.
@@ -2555,7 +2563,7 @@ caller's deadline budget.
 
 ## Block 8: Code - Debounce and Throttle in JavaScript
 
-```javascript
+\`\`\`javascript
 function debounce(fn, wait) {
     let timer = null;
     return function debounced(...args) {
@@ -2586,7 +2594,7 @@ function throttle(fn, interval) {
         }
     };
 }
-```
+\`\`\`
 
 Debounce collapses a burst into one trailing call; throttle guarantees at most
 one call per interval and, in this variant, also guarantees a trailing call so
@@ -2611,7 +2619,7 @@ latency does.
 
 ## Block 10: Code - Merging Intervals with Tests
 
-```python
+\`\`\`python
 from typing import List, Tuple
 
 def merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
@@ -2641,7 +2649,7 @@ assert merge_intervals([(1, 3), (2, 6), (8, 10), (15, 18)]) == [(1, 6), (8, 10),
 assert merge_intervals([]) == []
 assert merge_intervals([(5, 5)]) == [(5, 5)]
 assert count_gaps([(1, 6), (8, 10)], 0, 12) == 7
-```
+\`\`\`
 
 Sorting dominates the cost at n log n; the sweep itself is linear. The
 half-open convention matters: with closed intervals, touching intervals such as
@@ -2664,7 +2672,7 @@ the product of L and twice a over a.
 
 ## Block 12: Code - Bit Packing and Endianness in C
 
-```c
+\`\`\`c
 typedef struct {
     uint32_t id     : 20;
     uint32_t kind   :  4;
@@ -2678,7 +2686,7 @@ uint32_t pack_id_kind(uint32_t id, uint32_t kind) {
 
 uint32_t unpack_id(uint32_t word)  { return word >> 12; }
 uint32_t unpack_kind(uint32_t word){ return (word >> 8) & 0xFu; }
-```
+\`\`\`
 
 Bitfields inside a struct do not define a portable layout: the compiler chooses
 allocation order and padding, so a struct written by one toolchain may be read
@@ -2702,31 +2710,31 @@ around that one discipline.
 
 ## Block 14: Code - A Log Parsing Pipeline in Bash
 
-```bash
+\`\`\`bash
 #!/usr/bin/env bash
 set -euo pipefail
 
-log_file="${1:?usage: parse.sh access.log}"
-cutoff="${2:-200}"
+log_file="\${1:?usage: parse.sh access.log}"
+cutoff="\${2:-200}"
 
 awk '
-  match($0, /"[A-Z]+ [^ ]+ HTTP\/[0-9.]+" ([0-9]{3})/, m) {
+  match($0, /"[A-Z]+ [^ ]+ HTTP\\/[0-9.]+" ([0-9]{3})/, m) {
     status = m[1]
   }
-  match($0, /([0-9]+) "https?:\/\/[^"]*"$/ , s) {
+  match($0, /([0-9]+) "https?:\\/\\/[^"]*"$/ , s) {
     bytes = s[1]
   }
   { total++; sum += bytes }
-  END { printf "requests=%d avg_bytes=%.1f\n", total, (total ? sum/total : 0) }
+  END { printf "requests=%d avg_bytes=%.1f\\n", total, (total ? sum/total : 0) }
 ' "$log_file"
 
 awk -v cutoff="$cutoff" '
-  match($0, /"[A-Z]+ [^ ]+ HTTP\/[0-9.]+" ([0-9]{3})/, m) && m[1]+0 >= cutoff {
+  match($0, /"[A-Z]+ [^ ]+ HTTP\\/[0-9.]+" ([0-9]{3})/, m) && m[1]+0 >= cutoff {
     count[m[1]]++
   }
-  END { for (code in count) printf "%s %d\n", code, count[code] }
+  END { for (code in count) printf "%s %d\\n", code, count[code] }
 ' "$log_file" | sort -n
-```
+\`\`\`
 
 The pipeline assumes the combined log format and GNU awk for the three-argument
 match. Portability to POSIX awk would require splitting the line on quotes and
@@ -2750,7 +2758,7 @@ planners.
 
 ## Block 16: Code - A Token Bucket Rate Limiter
 
-```python
+\`\`\`python
 import time
 import threading
 
@@ -2775,7 +2783,7 @@ class TokenBucket:
                 self.tokens -= cost
                 return True
             return False
-```
+\`\`\`
 
 The bucket refills lazily, so no timer thread is needed. The burst parameter
 sets the maximum instantaneous allowance; the rate sets the long-run average.
@@ -2800,7 +2808,7 @@ objective as marketing keep both the bad latency and the bad data.
 
 ## Block 18: Code - A Small Recursive-Descent Parser
 
-```python
+\`\`\`python
 class Parser:
     def __init__(self, text):
         self.text = text
@@ -2839,7 +2847,7 @@ class Parser:
         if start == self.pos:
             raise SyntaxError('expected number')
         return int(self.text[start:self.pos])
-```
+\`\`\`
 
 Each grammar rule becomes one function, and precedence is encoded by the call
 chain: expression calls term calls atom. Adding unary minus means one more
@@ -4808,6 +4816,8 @@ thousand tokens to a hundred thousand samples all three domains.
             const mainTable = document.getElementById('mainResultTable');
             const wraps = resultsDiv.querySelectorAll('.conc-table-wrap');
             if (mainTable) mainTable.style.display = (idx === 0) ? '' : 'none';
+            // 单并发的统计块挂在 resultsDiv 直下，不在主表内——切到并发标签时必须一起藏掉
+            resultsDiv.querySelectorAll(':scope > .concurrent-stats').forEach(function (w) { w.style.display = (idx === 0) ? '' : 'none'; });
             wraps.forEach(function (w, k) { w.style.display = (idx === k + 1) ? '' : 'none'; });
             document.querySelectorAll('#resultTabs button').forEach(function (b, k) {
                 const on = (k === idx);
@@ -4842,9 +4852,13 @@ thousand tokens to a hundred thousand samples all three domains.
                 const thead = document.createElement('thead');
                 const tbody = document.createElement('tbody');
                 const hr = document.createElement('tr');
-                ['提示词长度', 'Prefill 耗时', 'Prefill 速度 (tok/s)', '输出长度', '输出耗时', '输出速度 (tok/s)', '状态', '并发'].forEach(function (h) {
+                // 表头与单并发表完全同一套翻译键，不再自造一套英文混排标题
+                const _t = translations[currentLang];
+                [_t.tableHeaderPromptLen, _t.tableHeaderPrefillTime, _t.tableHeaderPrefillSpeed,
+                 _t.tableHeaderOutputLen, _t.tableHeaderOutputTime, _t.tableHeaderOutputSpeed,
+                 _t.tableHeaderStatus].forEach(function (h) {
                     const th = document.createElement('th');
-                    th.textContent = h;
+                    th.innerHTML = h;
                     hr.appendChild(th);
                 });
                 thead.appendChild(hr);
@@ -4857,7 +4871,7 @@ thousand tokens to a hundred thousand samples all three domains.
                     if (!pt) {
                         const td0 = document.createElement('td'); td0.textContent = (_len || 0).toLocaleString();
                         tr.appendChild(td0);
-                        for (let k = 1; k < 8; k++) {
+                        for (let k = 1; k < 7; k++) {
                             const td = document.createElement('td');
                             td.textContent = k === 3 ? String(getOutputLengthFor(_len)) : (cr.finished ? '—' : (translations[currentLang].msgTesting || '测试中'));
                             td.style.color = '#8b949e';
@@ -4873,8 +4887,7 @@ thousand tokens to a hundred thousand samples all three domains.
                         getOutputLengthFor(pt.prompt_length),
                         (Number(pt.output_time_ms) || 0).toFixed(2),
                         (Number(pt.output_speed) || 0).toFixed(2),
-                        (pt.successful || 0) + '/' + (pt.concurrency || cr.concurrency) + ' 并发成功',
-                        cr.concurrency
+                        (pt.successful || 0) + '/' + (pt.concurrency || cr.concurrency) + ' 并发成功'
                     ];
                     cells.forEach(function (c) {
                         const td = document.createElement('td');
@@ -4885,6 +4898,23 @@ thousand tokens to a hundred thousand samples all three domains.
                 });
                 table.appendChild(tbody);
                 wrap.appendChild(table);
+
+                // 统计块：与单并发同款样式，挂在 wrap 里随标签页一起切换
+                const pts = (cr.points || []).filter(function (p) { return Number.isFinite(Number(p.prefill_speed)) && Number.isFinite(Number(p.output_speed)); });
+                if (pts.length) {
+                    const pv = pts.map(function (p) { return Number(p.prefill_speed); });
+                    const dv = pts.map(function (p) { return Number(p.output_speed); });
+                    const avg = function (a) { return (a.reduce(function (x, y) { return x + y; }, 0) / a.length).toFixed(2); };
+                    const sDiv = document.createElement('div');
+                    sDiv.className = 'concurrent-stats';
+                    sDiv.innerHTML = '<h3>' + _t.concurrentStatsTitle + ' (' + cr.concurrency + ' ' + _t.concurrentLabel + ')</h3>'
+                        + '<div class="stat-item"><span>' + _t.statTotalPrefillRange + '</span><span class="stat-value">' + Math.min.apply(null, pv).toFixed(2) + ' - ' + Math.max.apply(null, pv).toFixed(2) + ' tokens/s</span></div>'
+                        + '<div class="stat-item"><span>' + _t.statTotalDecodeRange + '</span><span class="stat-value">' + Math.min.apply(null, dv).toFixed(2) + ' - ' + Math.max.apply(null, dv).toFixed(2) + ' tokens/s</span></div>'
+                        + '<div class="stat-item"><span>' + _t.statAvgPrefill + '</span><span class="stat-value">' + avg(pv) + ' tokens/s</span></div>'
+                        + '<div class="stat-item"><span>' + _t.statAvgDecode + '</span><span class="stat-value">' + avg(dv) + ' tokens/s</span></div>';
+                    wrap.appendChild(sDiv);
+                }
+
                 resultsDiv.appendChild(wrap);
             });
 
@@ -4923,6 +4953,79 @@ thousand tokens to a hundred thousand samples all three domains.
                 '<div style="color:#8b949e;margin-top:6px;font-size:12px;">判定条件：' + m.req +
                 ' ｜ 最高通过长度 ' + info.max_success_tokens.toLocaleString() + ' tokens ｜ 2并发 ' + p3t + ' ｜ 5并发 ' + p8t + '</div>';
             try { renderConcurrencyResults(); } catch (e) { console.warn('render conc failed', e); }
+            try { showTierToast(info); } catch (e) { console.warn('tier toast failed', e); }
+        }
+
+        // 评级结果浮窗：右下角小卡片，通过=恭喜+徽章，未过=很遗憾+差在哪
+        const TIER_RANK = { assistant: 1, dev: 2, studio: 3 };
+        function showTierToast(info) {
+            const t = (typeof translations !== 'undefined' && currentLang === 'en') ? 'en' : 'zh';
+            let el = document.getElementById('tierToast');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'tierToast';
+                el.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:99999;max-width:340px;padding:14px 18px;border-radius:10px;background:#161b26;border:1px solid #2a3140;box-shadow:0 6px 24px rgba(0,0,0,.5);font-size:14px;color:#e6edf3;line-height:1.5;';
+                document.body.appendChild(el);
+            }
+            const target = window._testMode && TIER_RANK[window._testMode] ? window._testMode : (info && info.tier) || 'assistant';
+            const targetName = TIER_META[target] ? TIER_META[target].name : target;
+            const got = info && info.tier;
+            const passed = got && TIER_RANK[got] >= TIER_RANK[target];
+            if (passed) {
+                const m = TIER_META[got];
+                el.innerHTML = '<div style="font-size:15px;"><b>' + m.icon + ' ' + (t === 'en' ? 'Congratulations!' : '恭喜您！') + '</b></div>' +
+                    '<div style="margin-top:4px;">' + (t === 'en' ? 'You passed the ' : '通过了 ') + '<b style="color:#22d3ee;">' + m.name + '</b>' + (t === 'en' ? ' test' : '测试') + '</div>' +
+                    '<div id="tierToastPct" style="color:#8b949e;font-size:12px;margin-top:6px;display:none;"></div>' +
+                    '<div style="margin-top:8px;"><button onclick="document.getElementById(\'tierToast\').style.display=\'none\'" style="background:#24403e;border:1px solid #33605c;color:#e6edf3;padding:3px 10px;border-radius:5px;cursor:pointer;font-size:12px;">' + (t === 'en' ? 'Close' : '关闭') + '</button></div>';
+            } else {
+                const gotTxt = got ? (TIER_META[got].icon + ' ' + TIER_META[got].name) : (t === 'en' ? 'no tier' : '未达标');
+                el.innerHTML = '<div style="font-size:15px;"><b>' + (t === 'en' ? 'Not passed' : '很遗憾') + '</b></div>' +
+                    '<div style="margin-top:4px;">' + (t === 'en' ? 'Did not reach ' : '未通过 ') + '<b style="color:#d6b45a;">' + targetName + '</b>' +
+                    (t === 'en' ? ' (achieved: ' : '（当前达到：') + gotTxt + (t === 'en' ? ')' : '）') + '</div>' +
+                    '<div style="color:#8b949e;font-size:12px;margin-top:6px;">' + (TIER_META[target] ? (t === 'en' ? 'Requirement: ' + TIER_META[target].req : '条件：' + TIER_META[target].req) : '') + '</div>' +
+                    '<div id="tierToastPct" style="color:#8b949e;font-size:12px;margin-top:6px;display:none;"></div>' +
+                    '<div style="margin-top:8px;"><button onclick="document.getElementById(\'tierToast\').style.display=\'none\'" style="background:#24403e;border:1px solid #33605c;color:#e6edf3;padding:3px 10px;border-radius:5px;cursor:pointer;font-size:12px;">' + (t === 'en' ? 'Close' : '关闭') + '</button></div>';
+            }
+            el.style.display = '';
+        }
+
+        // 上传成功后：按记录 ID 拉取综合评分与分组百分位，追加到浮窗
+        async function _appendPercentileToToast(recordId) {
+            try {
+                if (!recordId) return;
+                const base = (location.protocol.startsWith('http') && !/^(127\.|localhost)/.test(location.hostname)) ? '' : 'https://bench.chirpdojo.com';
+                const r = await fetch(base + '/api/percentile?id=' + encodeURIComponent(recordId));
+                if (!r.ok) return;
+                const j = await r.json();
+                if (!j || j.score == null) return;
+                let el = document.getElementById('tierToast');
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = 'tierToast';
+                    el.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:99999;max-width:340px;padding:14px 18px;border-radius:10px;background:#161b26;border:1px solid #2a3140;box-shadow:0 6px 24px rgba(0,0,0,.5);font-size:14px;color:#e6edf3;line-height:1.5;';
+                    document.body.appendChild(el);
+                    el.innerHTML = '<div>📊</div>';
+                }
+                el.style.display = '';
+                let pct = document.getElementById('tierToastPct');
+                if (!pct) { pct = document.createElement('div'); pct.id = 'tierToastPct'; el.appendChild(pct); }
+                const t = (typeof translations !== 'undefined' && currentLang === 'en') ? 'en' : 'zh';
+                pct.style.display = '';
+                const scoreTxt = (t === 'en' ? 'Composite score: ' : '综合得分：') + '<b style="color:#22d3ee;">' + j.score + '</b>';
+                let rankTxt;
+                if (j.beat_pct != null) {
+                    rankTxt = (t === 'en'
+                        ? 'You beat <b style="color:#a78bfa;">' + j.beat_pct + '%</b> of players in the ' + (j.group || '') + ' group (' + j.count + ' runs)'
+                        : '在 <b>' + (j.group || '') + '</b> 组你击败了 <b style="color:#a78bfa;">' + j.beat_pct + '%</b> 的玩家（同组 ' + j.count + ' 条成绩）');
+                } else if (j.reason === 'group_too_small') {
+                    rankTxt = (t === 'en'
+                        ? 'Same-config group too small (' + j.count + ' runs) — no ranking yet'
+                        : '同配置组人数太少（' + j.count + ' 条），暂不排名');
+                } else {
+                    rankTxt = '';
+                }
+                pct.innerHTML = scoreTxt + (rankTxt ? '<br>' + rankTxt : '');
+            } catch (e) { /* 服务器不可达时静默跳过 */ }
         }
 
         function isContextOverflowError(error) {
@@ -9641,6 +9744,8 @@ function _parseRunCommand(cmd) {
                         msgDiv.style.cssText = 'display:block;background:#0d2b1e;color:#98c379;padding:10px;border-radius:6px;font-size:13px;';
                         msgDiv.innerHTML = `${t.cloudUploadSuccess || '✅ Upload successful!'}<br>${t.cloudShareId || 'Share ID:'}<strong style="font-family:monospace;color:#61afef;">${shareId || '-'}</strong> <button onclick='navigator.clipboard.writeText(${shareIdLiteral})' style="background:#16a085;border:none;color:#fff;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;">${t.cloudCopyId || 'Copy ID'}</button>${_buildShareLinkBlock(shareUrl, t.cloudReportLink || 'Report Link')}${concNote}${voteNote}`;
                     }
+                    // 上传成功后：浮窗追加综合得分与分组百分位（按记录 ID 查）
+                    _appendPercentileToToast(shareId);
                 } catch (e) { if (msgDiv) { msgDiv.style.cssText = 'display:block;background:#3a1515;color:#e06c75;padding:10px;border-radius:6px;font-size:13px;'; msgDiv.textContent = (typeof formatI18nText === 'function' ? formatI18nText((t.cloudUploadFailed || '❌ Upload failed: {error}'), { error: e.message }) : `${t.cloudUploadFailed || '❌ Upload failed:'} ${e.message}`); } }
                 finally { if (uploadBtn) { uploadBtn.disabled = false; uploadBtn.textContent = t.cloudUploadBtn || '📤 Upload'; } }
             };
