@@ -1560,6 +1560,7 @@
                 statusSuccess: '成功',
                 statusFailed: '失败',
                 statusStopping: '停止中...',
+                statusStopped: '已停止',
                 msgConcurrentSuccess: '并发成功',
                 msgValidPasses: '遍有效',
                 msgTestStopped: '测试已手动停止。',
@@ -1853,6 +1854,7 @@
                 statusSuccess: 'Success',
                 statusFailed: 'Failed',
                 statusStopping: 'Stopping...',
+                statusStopped: 'Stopped',
                 msgConcurrentSuccess: 'concurrent success',
                 msgValidPasses: 'passes valid',
                 msgTestStopped: 'Test manually stopped.',
@@ -3320,6 +3322,8 @@ mood.
         let totalTests = 0;
         let completedTests = 0;
         let isTestingRunning = false;
+        // 停止按钮要能掐断在途请求：所有测量请求的 AbortController 登记在这里
+        const _activeAborts = new Set();
         let currentApiType = 'openai';
         let currentModelName = '/model';
         let api_key = '';
@@ -4038,6 +4042,7 @@ mood.
         async function createFetchPromiseWithRetry(apiUrl, fetchOptions, timeout, retries = 3, delay = 1500) {
             for (let i = 0; i < retries; i++) {
                 const controller = new AbortController();
+                _activeAborts.add(controller);
                 const timeoutId = setTimeout(() => controller.abort(), timeout);
 
                 try {
@@ -4047,6 +4052,7 @@ mood.
                     });
 
                     clearTimeout(timeoutId); // Success, clear timeout
+                    _activeAborts.delete(controller);
 
                     // Note: We return the response even if !response.ok
                     // The processing function (e.g., processOpenAIStreamResponse) is responsible for checking response.ok
@@ -4054,6 +4060,7 @@ mood.
 
                 } catch (error) {
                     clearTimeout(timeoutId); // Failed attempt
+                    _activeAborts.delete(controller);
                     const friendlyMessage = getFriendlyFetchErrorMessage(error, apiUrl);
 
                     // Log the attempt
@@ -4797,6 +4804,7 @@ mood.
             }
             for (const length of lengths) {
                 const outLen = getOutputLengthFor(length);
+                const reqTimeout = Math.max(timeout, 30000 + length * 1.0 + outLen * 45);
                 if (!isTestingRunning) break;
                 const batch = [];
                 for (let rep = 0; rep < reps; rep++) {
@@ -4816,7 +4824,7 @@ mood.
                         const b = Object.assign({}, body);
                         b.messages = [{ role: 'system', content: DEFAULT_SYSTEM_PROMPT }, { role: 'user', content: pr }];
                         const opts = { method: 'POST', headers: { 'Authorization': `Bearer ${apiKeyVal}`, 'Content-Type': 'application/json' }, body: JSON.stringify(b) };
-                        return executeAndMeasureRequest(apiUrl, opts, timeout, length, length, 0, 0);
+                        return executeAndMeasureRequest(apiUrl, opts, reqTimeout, length, length, 0, 0);
                     }));
                     const ok = rs.filter(r => r.status === 'fulfilled').map(r => r.value);
                     if (ok.length < n) { liveRun.incomplete = true; liveRun.finished = true; renderConcurrencyResults(); return { points, incomplete: true, failed_length: length }; }
@@ -5076,6 +5084,9 @@ const row = document.createElement('tr');
                 st.networkLatencyMs = await collectNetworkLatencySample(latencySamples, apiUrl, 'openai', modelName, timeout);
                 const networkLatencyMs = st.networkLatencyMs;
                 const outLen = getOutputLengthFor(length);   // v2.1 浮动输出：decode 窗口随档位反比
+                // 每档超时自适应：prefill 按 1k tok/s 下限 + 输出按 22 tok/s 下限，再加 30s 余量。
+                // 固定超时要么短档误杀（v2.1 输出 2048 要 40s+），要么长档不够（262144 prefill 3 分钟）
+                const reqTimeout = Math.max(timeout, 30000 + resolvedPromptLength * 1.0 + outLen * 45);
                 st.outLen = outLen;
                 st.cells[6].textContent = repeatCount > 1
                     ? `${concurrency} ${translations[currentLang].msgConcurrentTesting} ${rep + 1}/${repeatCount}`
@@ -5120,7 +5131,7 @@ const measurementPromises = [];
                     };
 
                     measurementPromises.push(
-                        executeAndMeasureRequest(apiUrl, fetchOptions, timeout, resolvedPromptLength, promptTokenEstimate, networkLatencyMs, latencySamples.length)
+                        executeAndMeasureRequest(apiUrl, fetchOptions, reqTimeout, resolvedPromptLength, promptTokenEstimate, networkLatencyMs, latencySamples.length)
                     );
                 }
                 // 每轮重复单独 settle：重复必须串行，避免并发污染速度
@@ -5131,6 +5142,7 @@ const measurementPromises = [];
                         batch.push(result.value);
                     } else {
                         failedMessages.push(result.reason.message);
+                        if (window._stopRequested) st.acc.stopped = true;
                     }
                 }
                 st.acc.lastBatchSuccess = batch.length;
@@ -5446,6 +5458,18 @@ try {
                         completedTests = totalTests; // finish progress bar
                         progressBar.style.width = '100%';
                         stopAll = true;
+                    } else if (st.acc.stopped) {
+                    // 手动停止掐断在途请求导致的失败：如实标"已停止"，不吓唬成"失败"
+                    resultEntry.status = translations[currentLang].statusStopped;
+                    resultEntry.stopped = true;
+                    if (cells[6]) cells[6].title = '手动停止时掐断了进行中的请求';
+                    cells[1].textContent = '—';
+                    cells[2].textContent = '—';
+                    cells[3].textContent = '—';
+                    cells[4].textContent = '—';
+                    cells[5].textContent = '—';
+                    cells[6].textContent = resultEntry.status;
+                    row.classList.remove('info');
                     } else {
                     resultEntry.status = `${translations[currentLang].statusFailed}`;
                     if (cells[6]) cells[6].title = error.message;
@@ -5480,7 +5504,7 @@ try {
                     const st = ensureState(idx);
                     if (typeof window.__passProgress === 'function') window.__passProgress(pass + 1, repeatCount);
                     await runLengthOnce(st, pass);
-                    const stopAll = await finalizeLen(st);
+                    let stopAll = await finalizeLen(st);
                     // 每遍原始值：长度/遍号/prefill 毫秒与速度/decode/实发 token/token 来源/计时来源
                     try {
                         const _acc = st.acc && Array.isArray(st.acc.batchAggregates) ? st.acc.batchAggregates : [];
@@ -5504,6 +5528,9 @@ try {
                     } catch (e) { console.warn('[passLog]', e); }
                     st.passDone = pass + 1;
                     progressBar.style.width = `${(((pass * testLengths.length) + idx + 1) / (repeatCount * testLengths.length)) * 100}%`;
+                    // 任何一档真实失败 → 整个测试立刻停止（用户定案）；
+                    // 手动停止收尾的行 status 是"已停止"不是"失败"，不会误触发
+                    if (!stopAll && st.resultEntry && st.resultEntry.status === translations[currentLang].statusFailed) stopAll = true;
                     if (stopAll) { aborted = true; break; }
                     if (pass < repeatCount - 1) await new Promise(r => setTimeout(r, 600));
                 }
@@ -7008,7 +7035,8 @@ try {
             const stepMultiplier = parseInt(document.getElementById('stepMultiplier').value, 10) || 1;
             const outputLength = parseInt(document.getElementById('outputLength').value, 10);
             const concurrency = parseInt(document.getElementById('concurrency').value, 10) || 1;
-            const timeout = parseInt(document.getElementById('timeout').value, 10);
+            // v2.1 输出窗口最长 2048 token：旧版存的 30s 超时早就不够，强制下限 180s
+            const timeout = Math.max(parseInt(document.getElementById('timeout').value, 10) || 180000, 180000);
             const temperature = parseFloat(document.getElementById('temperatureInput').value);
             const top_p = parseFloat(document.getElementById('topPInput').value);
             const presence_penalty = parseFloat(document.getElementById('presencePenaltyInput').value);
@@ -7174,6 +7202,11 @@ try {
 
             stopTestBtn.onclick = () => {
                 isTestingRunning = false;
+                window._stopRequested = true;
+                // 立刻掐断所有在途请求：评级测试长档一次请求要几分钟，
+                // 不掐断的话点停止后表格要干等几分钟才收尾
+                for (const c of _activeAborts) { try { c.abort(); } catch (e) {} }
+                _activeAborts.clear();
                 stopTestBtn.disabled = true;
                 stopTestBtn.textContent = translations[currentLang].statusStopping;
             };
