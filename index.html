@@ -1649,6 +1649,9 @@
                 cloudCancelBtn: '取消',
                 cloudUploadBtn: '📤 上传分享', cloudUploading: '上传中...',
                 cloudUploadNote: '上传后数据公开可见，不可删除',
+                profilePick: '选择已存配置…', profileSaveBtn: '保存当前', profileDelBtn: '删除', profileLb: '已存配置',
+                profileNamePrompt: '给这套配置起个名字：', profileOverwrite: '同名配置已存在，覆盖？',
+                profileDelConfirm: '删除配置“{n}”？', profileEmpty: '当前没有可保存的内容（硬件和模型都是空的）',
                 cloudUploadMissingHardware: '❌ 请填写硬件信息（必填）',
                 cloudUploadNoData: '❌ 没有可上传的测试数据，请先完成测试',
                 cloudUploadSuccess: '✅ 上传成功！',
@@ -1943,6 +1946,9 @@
                 cloudCancelBtn: 'Cancel',
                 cloudUploadBtn: '📤 Upload', cloudUploading: 'Uploading...',
                 cloudUploadNote: 'Data is public once uploaded and cannot be deleted',
+                profilePick: 'Saved configs…', profileSaveBtn: 'Save current', profileDelBtn: 'Delete', profileLb: 'Saved configs',
+                profileNamePrompt: 'Name this config:', profileOverwrite: 'A config with this name exists. Overwrite?',
+                profileDelConfirm: 'Delete config “{n}”?', profileEmpty: 'Nothing to save (hardware and model are both empty)',
                 cloudUploadMissingHardware: '❌ Please fill in hardware information (required)',
                 cloudUploadNoData: '❌ No test data available to upload. Please run a test first.',
                 cloudUploadSuccess: '✅ Upload successful!',
@@ -2986,7 +2992,14 @@ thousand tokens to a hundred thousand samples all three domains.
                 // 词/词元比在 26 万字级还会再涨零点几个百分点，留 0.5%（至少 1024 token）余量
                 const safety = Math.max(1024, Math.round(ctxLimit * 0.005));
                 const room = ctxLimit - outLen - systemTokens - safety;
-                if (room > 0 && effectiveLength > room) effectiveLength = room;
+                // 档位超过服务端名义 ctx：直接失败中止（不静默截断成小档位虚标进榜）。
+                // 档位 ≤ 名义 ctx、只是装不下输出/系统词元/余量（默认整数 ctx 的常态，
+                // 如 ctx=131072 测 131072 档）：自动把 prompt 缩到塞得下（差约 1%，
+                // 在复测容差内），用户不必手改启动参数。
+                if (room <= 0 || effectiveLength > ctxLimit) {
+                    throw new Error('超出上下文：服务端上限 ' + ctxLimit + ' token，无法测 ' + resolvedLength + ' 档');
+                }
+                if (effectiveLength > room) effectiveLength = room;
             }
             const calibratedUserLength = Math.round((effectiveLength - systemTokens) / ratio);
             return Math.max(BENCHMARK_SUFFIX_TOKEN_LENGTH, calibratedUserLength);
@@ -5025,7 +5038,29 @@ thousand tokens to a hundred thousand samples all three domains.
                     rankTxt = '';
                 }
                 pct.innerHTML = scoreTxt + (rankTxt ? '<br>' + rankTxt : '');
+                // 图文简介引导（可选）：引导用户介绍搭建过程，喂给首页推荐卡/社区内容
+                const t2 = (typeof translations !== 'undefined' && currentLang === 'en') ? 'en' : 'zh';
+                let introLine = document.getElementById('tierToastIntro');
+                if (!introLine) {
+                    introLine = document.createElement('div');
+                    introLine.id = 'tierToastIntro';
+                    introLine.style.cssText = 'margin-top:10px;padding-top:10px;border-top:1px solid #2a3140;font-size:13px;';
+                    el.appendChild(introLine);
+                }
+                introLine.innerHTML = '<a href="javascript:void(0)" id="tierIntroLink" style="color:#22d3ee;text-decoration:none;cursor:pointer;">' +
+                    (t2 === 'en' ? '\u270d\ufe0f Write an intro about your build (optional)'
+                                 : '\u270d\ufe0f 写个图文简介，介绍你的搭建过程（可选）') + '</a>';
+                document.getElementById('tierIntroLink').onclick = function () { _openIntroOnSite(recordId); };
             } catch (e) { /* 服务器不可达时静默跳过 */ }
+        }
+
+        // 图文简介：直接打开网站成绩详情页的编辑区。登录态通过 URL 片段(#，不进服务器日志)
+        // 带过去：先调 /api/user/me 验证，有效才写入网站侧会话，等同已登录。
+        function _openIntroOnSite(recordId) {
+            const sess = (typeof acctSession === 'function') ? acctSession() : null;
+            let url = 'https://bench.chirpdojo.com/record/' + encodeURIComponent(recordId) + '?edit=1';
+            if (sess && sess.token) url += '#tok=' + encodeURIComponent(sess.token);
+            window.open(url, '_blank');
         }
 
         function isContextOverflowError(error) {
@@ -5188,9 +5223,15 @@ const measurementPromises = [];
                     }
                 }
                 st.acc.lastBatchSuccess = batch.length;
-                if (batch.length > 0) {
-                    batchAggregates.push(calculateAggregateThroughputMetrics(batch));
-                    concurrencyResults.push(...batch);
+                // 隐藏质量闸门闭环：复读退化遍不进聚合/中位数（复读时 ngram
+                // 投机命中 100%，decode 虚高 3~5 倍，绝不能计入成绩）
+                const _clean = batch.filter(r => !r.degenerate);
+                if (_clean.length !== batch.length) {
+                    console.warn(`[degenerate] ${length} 档 ${batch.length - _clean.length} 遍输出复读，剔除不计成绩`);
+                }
+                if (_clean.length > 0) {
+                    batchAggregates.push(calculateAggregateThroughputMetrics(_clean));
+                    concurrencyResults.push(..._clean);
                 }
                 st.acc.firstPrompt = firstPrompt;
             }
@@ -8842,7 +8883,8 @@ ${_uploadBtn}
             [['hwGpuLb','hwGpuLb'],['hwGpuCountLb','hwGpuCountLb'],['hwCpuLb','hwCpuLb'],['hwRamSizeLb','hwRamSizeLb'],
              ['hwChipsetLb','hwChipsetLb'],['hwRamSpeedLb','hwRamSpeedLb'],['hwDetectHint','hwDetectHint'],['cmdHint','cmdHint'],
              ['cfgFrameworkLb','cfgFrameworkLb'],['cfgModelLb','cfgModelLb'],['cfgQuantLb','cfgQuantLb'],['cfgCtxLb','cfgCtxLb'],
-             ['cfgKvLb','cfgKvLb'],['cfgParLb','cfgParLb'],['cfgDraftLb','cfgDraftLb'],['cfgHint','cfgHint']]
+             ['cfgKvLb','cfgKvLb'],['cfgParLb','cfgParLb'],['cfgDraftLb','cfgDraftLb'],['cfgHint','cfgHint'],
+             ['savedProfileLb','profileLb'],['profileSaveBtn','profileSaveBtn'],['profileDelBtn','profileDelBtn']]
                 .forEach(function (pair) { if (_e(pair[0]) && t[pair[1]]) _e(pair[0]).textContent = t[pair[1]]; });
             if (_e('shareRunCommand')) _e('shareRunCommand').placeholder = t.cloudRunCommandPlaceholder;
             if (_e('shareCancelBtn')) _e('shareCancelBtn').textContent = t.cloudCancelBtn;
@@ -8864,6 +8906,12 @@ ${_uploadBtn}
         <div
             style="background:#282c34;border:1px solid #2a3140;border-radius:12px;padding:26px;width:780px;max-width:96vw;max-height:90vh;overflow-y:auto;color:#abb2bf;">
             <h3 id="shareModalTitle" style="margin:0 0 16px;color:#61afef;">☁️ 分享测试结果</h3>
+            <div id="profileBar" style="display:flex;align-items:center;gap:8px;margin:0 0 14px;">
+                <span id="savedProfileLb" style="font-size:12px;color:#8b949e;">已存配置</span>
+                <select id="profileSelect" style="flex:1;max-width:280px;padding:6px;border:1px solid #2a3140;border-radius:4px;background:#0d1117;color:#e6edf3;font-size:12.5px;"></select>
+                <button type="button" id="profileSaveBtn" style="background:#24403e;border:1px solid #33605c;color:#e6edf3;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12.5px;">保存当前</button>
+                <button type="button" id="profileDelBtn" style="background:transparent;border:1px solid #2a3140;color:#8b949e;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:12.5px;">删除</button>
+            </div>
             <div style="margin-bottom:14px;"><label id="shareRunCommandLabel" style="display:block;margin-bottom:4px;font-size:13px;font-weight:600;color:#61afef;">启动命令 <span style="color:#e06c75;">*</span><span id="cmdHint" style="color:#6b7280;font-size:11px;font-weight:400;margin-left:6px;">贴完整命令，下面自动填</span></label><textarea
                     id="shareRunCommand" maxlength="2000" rows="3"
                     style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #2a3140;border-radius:4px;background:#1e2227;color:#e6edf3;font-size:12.5px;font-family:ui-monospace,Consolas,monospace;resize:vertical;"></textarea>
@@ -9361,6 +9409,101 @@ function _parseRunCommand(cmd) {
                 const v = _hwValues();
                 for (const k in v) localStorage.setItem('llm_speedtest_hw_' + k, v[k]);
             }
+            // ===== 上传弹窗：已存配置（硬件+模型信息一键回填，纯本地） =====
+            const _PROFILE_KEY = 'chirpb…s_v1';
+            function _profilesLoad() {
+                try { const a = JSON.parse(localStorage.getItem(_PROFILE_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+                catch (e) { return []; }
+            }
+            function _profilesSaveArr(a) { localStorage.setItem(_PROFILE_KEY, JSON.stringify(a.slice(0, 10))); }
+            function _profileCapture() {
+                const cfg = {}, hw = _hwValues();
+                for (const k in _cfgIds) {
+                    const el = document.getElementById(_cfgIds[k]);
+                    cfg[k] = el ? String(el.value || '').trim() : '';
+                }
+                return { name: '', ts: Date.now(),
+                    cmd: (document.getElementById('shareRunCommand') || {}).value || '',
+                    cfg: cfg, hw: hw };
+            }
+            function _profileDefaultName(p) {
+                const gpu = p.hw.gpu ? p.hw.gpu + (p.hw.gpu_count ? '×' + p.hw.gpu_count : '') : 'HW';
+                const model = p.cfg.model || (p.cmd.match(/--model[=\s]+(\S+)/) || [])[1] || 'model';
+                return (gpu + ' ' + model + (p.cfg.quant ? ' ' + p.cfg.quant : '')).slice(0, 48);
+            }
+            function _profileApply(p) {
+                const rc = document.getElementById('shareRunCommand');
+                if (rc) { rc.value = p.cmd || ''; _fillCfgFields(true); }
+                for (const k in _cfgIds) {
+                    const el = document.getElementById(_cfgIds[k]);
+                    if (!el) continue;
+                    const v = (p.cfg && p.cfg[k]) || '';
+                    if (v) { el.value = v; el.dataset.manual = '1'; el.style.borderColor = '#2a3140'; }
+                }
+                const e = _hwEls();
+                for (const k in e) {
+                    if (e[k] && p.hw && p.hw[k]) e[k].value = p.hw[k];
+                }
+                _saveHwFields();
+            }
+            function _renderProfiles() {
+                const sel = document.getElementById('profileSelect');
+                if (!sel) return;
+                const arr = _profilesLoad();
+                sel.innerHTML = '';
+                const ph = document.createElement('option');
+                ph.value = ''; ph.textContent = (translations[currentLang] || {}).profilePick || '选择已存配置…';
+                sel.appendChild(ph);
+                arr.forEach(function (p, i) {
+                    const o = document.createElement('option');
+                    o.value = String(i); o.textContent = p.name || _profileDefaultName(p);
+                    sel.appendChild(o);
+                });
+                sel.disabled = arr.length === 0;
+            }
+            window._profileWireOnce = window._profileWireOnce || false;
+            function _wireProfileBar() {
+                if (window._profileWireOnce) { _renderProfiles(); return; }
+                window._profileWireOnce = true;
+                const sel = document.getElementById('profileSelect');
+                const saveBtn = document.getElementById('profileSaveBtn');
+                const delBtn = document.getElementById('profileDelBtn');
+                sel.onchange = function () {
+                    if (sel.value === '') return;
+                    const arr = _profilesLoad();
+                    const p = arr[parseInt(sel.value, 10)];
+                    if (p) _profileApply(p);
+                };
+                saveBtn.onclick = function () {
+                    const p = _profileCapture();
+                    if (!p.hw.gpu && !p.cfg.model && !p.cmd.trim()) {
+                        alert((translations[currentLang] || {}).profileEmpty || '当前没有可保存的内容（硬件和模型都是空的）');
+                        return;
+                    }
+                    const def = _profileDefaultName(p);
+                    const name = prompt((translations[currentLang] || {}).profileNamePrompt || '给这套配置起个名字：', def);
+                    if (name === null) return;
+                    p.name = name.trim() || def;
+                    const arr = _profilesLoad();
+                    const dup = arr.findIndex(function (q) { return q.name === p.name; });
+                    if (dup >= 0) { if (!confirm((translations[currentLang] || {}).profileOverwrite || '同名配置已存在，覆盖？')) return; arr[dup] = p; }
+                    else arr.unshift(p);
+                    _profilesSaveArr(arr);
+                    _renderProfiles();
+                    sel.value = '0';
+                };
+                delBtn.onclick = function () {
+                    if (sel.value === '') return;
+                    const arr = _profilesLoad();
+                    const p = arr[parseInt(sel.value, 10)];
+                    if (!p) return;
+                    if (!confirm(((translations[currentLang] || {}).profileDelConfirm || '删除配置“{n}”？').replace('{n}', p.name))) return;
+                    arr.splice(parseInt(sel.value, 10), 1);
+                    _profilesSaveArr(arr);
+                    _renderProfiles();
+                };
+                _renderProfiles();
+            }
             // 启动命令解析 → 自动填入配置字段（用户改过的字段不覆盖）
             const _cfgIds = { framework: 'cfgFramework', model: 'cfgModel', quant: 'cfgQuant', ctx: 'cfgCtx', kv: 'cfgKv', parallel: 'cfgPar', draft: 'cfgDraft', repeat: 'cfgRepeat' };
             let _cfgAuto = {};
@@ -9457,6 +9600,7 @@ function _parseRunCommand(cmd) {
                 } else if (vs) { vs.style.display = 'none'; }
                 document.getElementById('shareModal').style.display = 'flex';
                 _fillCfgFields(true);
+                _wireProfileBar();
                 if (window._historyUploadRecord) {
                     // 历史成绩上传时启动命令必填，必须露出来（哪怕是本机模式的历史记录）
                     ['notesRow', 'runCommandRow'].forEach(function (id) {
@@ -9636,6 +9780,7 @@ function _parseRunCommand(cmd) {
                     ram_size: hwv.ram_size || null,
                     ram_speed: hwv.ram_speed || null,
                     chipset: hwv.chipset || null,
+                    os_name: (window._hwInfo && window._hwInfo.os) || null,
                     max_context: parsedCmd.ctx || null,
                     kv_quant: parsedCmd.kv || null,
                     draft_tokens: parsedCmd.draft || null,

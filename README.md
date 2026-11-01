@@ -86,7 +86,7 @@ That is **+79%** from cache reuse alone, with no hardware change. The effect gro
 So `index.html` does two things, and both are part of the measurement definition rather than an optimisation:
 
 1. every request — each repeat pass, each concurrency request, each calibration probe — is prefixed with a fresh random `[s xxxxxxxx]` marker;
-2. any pass whose prefill time is under 40% of the fastest pass at the same length is discarded as a cache hit.
+2. any pass whose prefill time is under 40% of the **slowest** pass at the same length is discarded as a cache hit (at least one pass is always kept).
 
 Removing or weakening either one makes the numbers invalid: they stop measuring prompt-processing speed and start measuring how well the server caches. Leaderboard submissions are cross-checked by independent re-tests (5 different users; average prefill within 5%, average decode within 10%) and by a server-recomputed `result_hash`, so inflated runs are rejected — but a fork that drops the nonce will simply produce numbers that are not comparable with ChirpBench results.
 

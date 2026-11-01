@@ -197,8 +197,18 @@ func detectHW() hwInfo {
 		RAMSize:  ramSize,
 		RAMSpeed: ramSpeed,
 		Chipset:  detectChipset(),
-		OS:       runtime.GOOS + "/" + runtime.GOARCH,
+		OS:       osLabel(),
 	}
+}
+
+// osLabel 系统标签；WSL 单独标出（WSL 与原生 Ubuntu 的驱动栈/性能不同，
+// 榜上需要能看出来）。
+func osLabel() string {
+	s := runtime.GOOS + "/" + runtime.GOARCH
+	if runtime.GOOS == "linux" && strings.Contains(strings.ToLower(readFile("/proc/version")), "microsoft") {
+		s += " (WSL)"
+	}
+	return s
 }
 
 // hwHandler 返回本机硬件信息，页面用来预填（用户可改）
